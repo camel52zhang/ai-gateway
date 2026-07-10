@@ -1,0 +1,16 @@
+# --- Build artifacts ---
+*.exe
+*.exe~
+ai-gateway
+ai-gateway.exe
+
+# --- Runtime data (SQLite WAL + shm + backups) ---
+/data/
+
+# --- Logs ---
+*.log
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+*.swp
