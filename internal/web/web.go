@@ -75,7 +75,6 @@ func RenderDashboard(providerDataJSON string) string {
 	return renderDashboardTemplate(providerDataJSON)
 }
 
-
 // renderDashboardTemplate builds the full dashboard HTML, injecting providerDataJSON
 // into the {{PROVIDER_DATA}} placeholder (without JSON escaping — providerDataJSON is
 // already well-formed JSON from the caller).
@@ -315,6 +314,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
               </div>
               <div><label class="block text-xs font-medium text-gray-600 mb-1">优先级</label><input v-model.number="customForm.priority" type="number" min="1" max="100" class="input"></div>
               <div class="col-span-2"><label class="block text-xs font-medium text-gray-600 mb-1">模型列表（逗号分隔）</label><input v-model="customForm.modelsStr" type="text" placeholder="model-a, model-b" class="input"></div>
+              <div class="col-span-2"><label class="block text-xs font-medium text-gray-600 mb-1">API Key（可选，用于拉取模型/代理请求）</label><input v-model="customForm.key" type="password" placeholder="粘贴 API Key" class="input"></div>
             </div>
             <button type="submit" :disabled="customLoading" class="btn btn-primary text-sm w-full">
               <span v-if="!customLoading">添加自定义 Provider</span><span v-else><i class="fas fa-circle-notch fa-spin"></i> 添加中...</span>
@@ -322,11 +322,18 @@ func renderDashboardTemplate(providerDataJSON string) string {
           </form>
           <div v-if="customProviders.length" class="space-y-2">
             <div v-for="cp in customProviders" class="flex items-center justify-between p-3 bg-yellow-50 rounded-lg border border-yellow-100">
-              <div>
+              <div class="flex-1">
                 <div class="font-medium text-sm">{{ cp.label }} <span class="text-xs text-yellow-600 bg-yellow-100 px-1 rounded">自定义</span></div>
                 <div class="text-xs text-gray-400">{{ cp.id }} · {{ cp.baseUrl }}</div>
+                <div v-if="cp.keyMask" class="text-xs text-green-600 mt-0.5"><i class="fas fa-key"></i> 已配置密钥 {{ cp.keyMask }}</div>
+                <div class="mt-2 flex gap-2">
+                  <input v-model="cp._key" type="password" placeholder="粘贴 API Key" class="input flex-1 text-xs py-1">
+                  <button @click="updateCustomProviderKey(cp)" :disabled="cp._saving" class="btn btn-secondary text-xs whitespace-nowrap">
+                    <span v-if="!cp._saving">更新密钥</span><span v-else><i class="fas fa-circle-notch fa-spin"></i></span>
+                  </button>
+                </div>
               </div>
-              <button @click="removeCustomProvider(cp.id)" class="btn-danger text-xs"><i class="fas fa-trash-alt"></i></button>
+              <button @click="removeCustomProvider(cp.id)" class="btn-danger text-xs ml-3"><i class="fas fa-trash-alt"></i></button>
             </div>
           </div>
           <div v-else-if="!showCustomForm" class="text-xs text-gray-400 p-2">暂无自定义 Provider。点击"添加"来接入你自己的 API 服务。</div>
@@ -576,7 +583,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
           passwordLoading: false,
           // Custom provider
           showCustomForm: false,
-          customForm: { id: '', label: '', baseUrl: '', adapter: 'openai', priority: 50, modelsStr: '' },
+          customForm: { id: '', label: '', baseUrl: '', adapter: 'openai', priority: 50, modelsStr: '', key: '' },
           customLoading: false,
           customProviders: [],
           // Test (playground)
@@ -833,19 +840,40 @@ func renderDashboardTemplate(providerDataJSON string) string {
               id: this.customForm.id, label: this.customForm.label, baseUrl: this.customForm.baseUrl,
               adapter: this.customForm.adapter, priority: this.customForm.priority,
               models: this.customForm.modelsStr ? this.customForm.modelsStr.split(',').map(s => s.trim()).filter(Boolean) : [],
+              key: this.customForm.key || '',
             };
             const res = await fetch('/api/providers/custom', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
             if (res.ok) {
               this.showToast('自定义 Provider 添加成功');
               this.showCustomForm = false;
-              this.customForm = { id:'', label:'', baseUrl:'', adapter:'openai', priority:50, modelsStr:'' };
+              const newId = this.customForm.id;
+              this.customForm = { id:'', label:'', baseUrl:'', adapter:'openai', priority:50, modelsStr:'', key:'' };
               await this.fetchCustomProviders();
+              if (newId) await this.fetchModels(newId, false);
             } else {
               const d = await res.json();
               this.showToast(d.error || '添加失败', 'error');
             }
           } catch { this.showToast('网络错误', 'error'); }
           finally { this.customLoading = false; }
+        },
+        async updateCustomProviderKey(cp) {
+          // Send only the id + key; the backend merges into the existing custom
+          // provider and mirrors the key into config.Providers for routing/models.
+          if (cp._key === undefined || cp._key === null) cp._key = '';
+          cp._saving = true;
+          try {
+            const res = await fetch('/api/providers/custom', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ id: cp.id, key: cp._key }) });
+            if (res.ok) {
+              this.showToast(cp._key ? '密钥已更新' : '密钥已清除');
+              cp._key = '';
+              await this.fetchModels(cp.id, false);
+            } else {
+              const d = await res.json();
+              this.showToast(d.error || '更新失败', 'error');
+            }
+          } catch { this.showToast('网络错误', 'error'); }
+          finally { cp._saving = false; }
         },
         async removeCustomProvider(id) {
           if (!confirm('确认删除自定义 Provider "' + id + '"？')) return;

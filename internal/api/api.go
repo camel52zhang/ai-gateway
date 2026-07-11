@@ -12,8 +12,8 @@ import (
 
 	"ai-gateway/internal/adapters"
 	"ai-gateway/internal/config"
-	"ai-gateway/internal/proxy"
 	"ai-gateway/internal/providers"
+	"ai-gateway/internal/proxy"
 	"ai-gateway/internal/storage"
 	"ai-gateway/internal/utils"
 )
@@ -70,6 +70,29 @@ func HandleConfigPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.UnifiedKey != "" {
 		cfg.UnifiedKey = body.UnifiedKey
+	}
+
+	// Re-merge custom-provider keys into cfg.Providers. The dashboard tracks
+	// custom-provider keys in cfg.CustomProviders (server-side only, never sent
+	// to the client), so the providers list it POSTs back does NOT include them.
+	// Without this, any saveConfig() call would clobber a keyed custom provider
+	// and it could no longer fetch models or serve traffic. We treat the
+	// custom-provider key as authoritative for its type.
+	for _, cp := range cfg.CustomProviders {
+		if cp.Key == "" {
+			continue
+		}
+		found := false
+		for i := range cfg.Providers {
+			if cfg.Providers[i].Type == cp.ID {
+				cfg.Providers[i].Key = cp.Key
+				found = true
+				break
+			}
+		}
+		if !found {
+			cfg.Providers = append(cfg.Providers, config.UserProvider{Type: cp.ID, Key: cp.Key})
+		}
 	}
 
 	// Track which provider types still have a (non-empty) API key, so we can
@@ -147,18 +170,18 @@ func HandleProviders(w http.ResponseWriter, r *http.Request) {
 	var providerList []map[string]interface{}
 	for _, p := range list {
 		providerList = append(providerList, map[string]interface{}{
-			"id":       p.ID,
-			"label":    p.Label,
-			"category": p.Category,
-			"models":   p.Models,
-			"baseUrl":  p.BaseURL,
-			"website":  p.Website,
-			"docs":     p.Docs,
-			"apiKeyUrl": p.APIKeyURL,
-			"icon":     p.Icon,
+			"id":         p.ID,
+			"label":      p.Label,
+			"category":   p.Category,
+			"models":     p.Models,
+			"baseUrl":    p.BaseURL,
+			"website":    p.Website,
+			"docs":       p.Docs,
+			"apiKeyUrl":  p.APIKeyURL,
+			"icon":       p.Icon,
 			"compatible": p.Compatible,
-			"adapter":  p.Adapter,
-			"priority": p.Priority,
+			"adapter":    p.Adapter,
+			"priority":   p.Priority,
 		})
 	}
 
@@ -180,38 +203,47 @@ func HandleCustomProvidersGet(w http.ResponseWriter, r *http.Request) {
 	var builtin []map[string]interface{}
 	for _, p := range list {
 		builtin = append(builtin, map[string]interface{}{
-			"id":       p.ID,
-			"label":    p.Label,
-			"category": p.Category,
-			"models":   p.Models,
-			"baseUrl":  p.BaseURL,
-			"website":  p.Website,
-			"docs":     p.Docs,
-			"apiKeyUrl": p.APIKeyURL,
-			"icon":     p.Icon,
+			"id":         p.ID,
+			"label":      p.Label,
+			"category":   p.Category,
+			"models":     p.Models,
+			"baseUrl":    p.BaseURL,
+			"website":    p.Website,
+			"docs":       p.Docs,
+			"apiKeyUrl":  p.APIKeyURL,
+			"icon":       p.Icon,
 			"compatible": p.Compatible,
-			"adapter":  p.Adapter,
-			"priority": p.Priority,
-			"source":   "builtin",
+			"adapter":    p.Adapter,
+			"priority":   p.Priority,
+			"source":     "builtin",
 		})
 	}
 
 	var custom []map[string]interface{}
 	for _, cp := range cfg.CustomProviders {
+		// keyMask: show only the last 4 chars so an operator can tell a key is
+		// configured without exposing the secret. The full key is server-side only.
+		var keyMask string
+		if len(cp.Key) > 4 {
+			keyMask = "****" + cp.Key[len(cp.Key)-4:]
+		} else if cp.Key != "" {
+			keyMask = "****"
+		}
 		custom = append(custom, map[string]interface{}{
-			"id":       cp.ID,
-			"label":    cp.Label,
-			"category": cp.Category,
-			"models":   cp.Models,
-			"baseUrl":  cp.BaseURL,
-			"website":  cp.Website,
-			"docs":     cp.Docs,
-			"apiKeyUrl": cp.APIKeyURL,
-			"icon":     cp.Icon,
+			"id":         cp.ID,
+			"label":      cp.Label,
+			"category":   cp.Category,
+			"models":     cp.Models,
+			"baseUrl":    cp.BaseURL,
+			"website":    cp.Website,
+			"docs":       cp.Docs,
+			"apiKeyUrl":  cp.APIKeyURL,
+			"icon":       cp.Icon,
 			"compatible": cp.Compatible,
-			"adapter":  cp.Adapter,
-			"priority": cp.Priority,
-			"source":   "custom",
+			"keyMask":    keyMask,
+			"adapter":    cp.Adapter,
+			"priority":   cp.Priority,
+			"source":     "custom",
 		})
 	}
 
@@ -233,33 +265,15 @@ func HandleCustomProvidersPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if body.ID == "" || body.Label == "" || body.BaseURL == "" {
-		utils.JSON(w, 400, map[string]string{"error": "Missing required fields: id, label, baseUrl"})
+	if body.ID == "" {
+		utils.JSON(w, 400, map[string]string{"error": "Missing required field: id"})
 		return
 	}
 
-	if _, err := url.Parse(body.BaseURL); err != nil {
-		utils.JSON(w, 400, map[string]string{"error": "baseUrl must be a valid URL"})
-		return
-	}
-
-	if _, ok := providers.Get(body.ID); ok {
-		utils.JSON(w, 409, map[string]string{"error": "Provider \"" + body.ID + "\" already exists as a built-in provider"})
-		return
-	}
-
+	// Upsert semantics: if the provider already exists, merge non-empty fields
+	// from the request into the stored one. This lets the dashboard update a
+	// single field (e.g. just the API key) without resending everything.
 	cfg, _ := storage.GetConfig()
-	body.BaseURL = strings.TrimRight(body.BaseURL, "/")
-	if body.Category == "" {
-		body.Category = "custom"
-	}
-	if body.Adapter == "" {
-		body.Adapter = "openai"
-	}
-	if body.Priority == 0 {
-		body.Priority = 50
-	}
-
 	idx := -1
 	for i, cp := range cfg.CustomProviders {
 		if cp.ID == body.ID {
@@ -267,16 +281,105 @@ func HandleCustomProvidersPost(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+
+	// Reject clobbering a built-in provider ID (only on first creation).
+	if idx < 0 {
+		if _, ok := providers.Get(body.ID); ok {
+			utils.JSON(w, 409, map[string]string{"error": "Provider \"" + body.ID + "\" already exists as a built-in provider"})
+			return
+		}
+	}
+
+	merged := config.CustomProvider{}
 	if idx >= 0 {
-		cfg.CustomProviders[idx] = body
+		merged = cfg.CustomProviders[idx]
 	} else {
-		cfg.CustomProviders = append(cfg.CustomProviders, body)
+		merged.ID = body.ID
+	}
+
+	// Required fields must be present for a brand-new provider.
+	if idx < 0 {
+		if body.Label == "" || body.BaseURL == "" {
+			utils.JSON(w, 400, map[string]string{"error": "Missing required fields: label, baseUrl"})
+			return
+		}
+		if _, err := url.Parse(body.BaseURL); err != nil {
+			utils.JSON(w, 400, map[string]string{"error": "baseUrl must be a valid URL"})
+			return
+		}
+	}
+
+	// Merge provided fields.
+	if body.Label != "" {
+		merged.Label = body.Label
+	}
+	if body.BaseURL != "" {
+		merged.BaseURL = strings.TrimRight(body.BaseURL, "/")
+	}
+	if body.Category != "" {
+		merged.Category = body.Category
+	}
+	if body.Website != "" {
+		merged.Website = body.Website
+	}
+	if body.Docs != "" {
+		merged.Docs = body.Docs
+	}
+	if body.APIKeyURL != "" {
+		merged.APIKeyURL = body.APIKeyURL
+	}
+	if body.Icon != "" {
+		merged.Icon = body.Icon
+	}
+	if body.Adapter != "" {
+		merged.Adapter = body.Adapter
+	}
+	if body.Priority != 0 {
+		merged.Priority = body.Priority
+	}
+	if body.Models != nil {
+		merged.Models = body.Models
+	}
+
+	// Key is optional and never echoed back to the client. On upsert the client
+	// always sends the authoritative key value (empty string = clear). This lets
+	// the dashboard update just the key without resending all other fields.
+	merged.Key = strings.TrimSpace(body.Key)
+
+	if idx >= 0 {
+		cfg.CustomProviders[idx] = merged
+	} else {
+		cfg.CustomProviders = append(cfg.CustomProviders, merged)
+	}
+
+	// Mirror the key into config.Providers so the proxy + HandleModels resolve
+	// it exactly like a builtin provider. Without this a keyed custom provider
+	// could never fetch models or serve traffic. The key only lives server-side.
+	ui := -1
+	for i, up := range cfg.Providers {
+		if up.Type == merged.ID {
+			ui = i
+			break
+		}
+	}
+	if merged.Key != "" {
+		if ui >= 0 {
+			cfg.Providers[ui].Key = merged.Key
+		} else {
+			cfg.Providers = append(cfg.Providers, config.UserProvider{Type: merged.ID, Key: merged.Key})
+		}
+	} else if ui >= 0 {
+		// Key cleared: drop the mirrored entry so stale keys don't linger.
+		cfg.Providers = append(cfg.Providers[:ui], cfg.Providers[ui+1:]...)
 	}
 
 	storage.SaveConfig(cfg)
+	// Never echo the raw key back to the client in the response.
+	resp := merged
+	resp.Key = ""
 	utils.JSON(w, 200, map[string]interface{}{
 		"success":  true,
-		"provider": body,
+		"provider": resp,
 	})
 }
 
@@ -305,6 +408,18 @@ func HandleCustomProvidersDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg.CustomProviders = filtered
+
+	// Drop the mirrored keyed entry so the deleted provider can no longer
+	// serve traffic or appear as a configured provider.
+	var providers []config.UserProvider
+	for _, up := range cfg.Providers {
+		if up.Type != id {
+			providers = append(providers, up)
+		}
+	}
+	cfg.Providers = providers
+	storage.DeleteCachedModels(id)
+
 	storage.SaveConfig(cfg)
 	utils.JSON(w, 200, map[string]bool{"success": true})
 }
@@ -402,10 +517,10 @@ func HandleStats(w http.ResponseWriter, r *http.Request) {
 		"providerHealth":  health,
 		"failureMetrics":  failureMetrics,
 		"healthSummary": map[string]interface{}{
-			"status":         status,
-			"statusLabel":    statusLabel,
-			"totalProviders": len(cfg.Providers),
-			"healthyProviders": healthy,
+			"status":               status,
+			"statusLabel":          statusLabel,
+			"totalProviders":       len(cfg.Providers),
+			"healthyProviders":     healthy,
 			"degradedProviders":    degraded,
 			"circuitOpenProviders": circuitOpen,
 			"totalFailures":        failures,
@@ -756,12 +871,12 @@ func streamResponsesTranslate(w http.ResponseWriter, upstreamResp *http.Response
 		writeEvent("response.output_item.done", map[string]interface{}{
 			"output_index": st.outputIndex,
 			"item": map[string]interface{}{
-				"id":         st.itemID,
-				"type":       "function_call",
-				"status":     "completed",
-				"call_id":    st.itemID,
-				"name":       st.name,
-				"arguments":  st.args,
+				"id":        st.itemID,
+				"type":      "function_call",
+				"status":    "completed",
+				"call_id":   st.itemID,
+				"name":      st.name,
+				"arguments": st.args,
 			},
 		})
 	}
@@ -779,12 +894,12 @@ func streamResponsesTranslate(w http.ResponseWriter, upstreamResp *http.Response
 			})
 		} else {
 			output = append(output, map[string]interface{}{
-				"id":         it.itemID,
-				"type":       "function_call",
-				"status":     "completed",
-				"call_id":    it.itemID,
-				"name":       it.name,
-				"arguments":  it.args,
+				"id":        it.itemID,
+				"type":      "function_call",
+				"status":    "completed",
+				"call_id":   it.itemID,
+				"name":      it.name,
+				"arguments": it.args,
 			})
 		}
 	}
