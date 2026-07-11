@@ -299,14 +299,14 @@ func renderDashboardTemplate(providerDataJSON string) string {
           <hr class="my-6 border-gray-200">
           <div class="flex justify-between items-center mb-4">
             <h3 class="font-semibold">自定义 Provider</h3>
-            <button @click="showCustomForm=!showCustomForm" class="btn btn-secondary text-xs">
+            <button @click="toggleCustomForm" class="btn btn-secondary text-xs">
               <i :class="showCustomForm ? 'fas fa-times' : 'fas fa-plus'"></i>
-              {{ showCustomForm ? '取消' : '添加' }}
+              {{ showCustomForm ? '取消' : (editingCustomId ? '取消编辑' : '添加') }}
             </button>
           </div>
           <form v-if="showCustomForm" @submit.prevent="addCustomProvider" class="p-4 bg-gray-50 rounded-lg space-y-3 mb-3">
             <div class="grid grid-cols-2 gap-3">
-              <div><label class="block text-xs font-medium text-gray-600 mb-1">ID（唯一标识）*</label><input v-model="customForm.id" type="text" placeholder="如 my-provider" class="input" required></div>
+              <div><label class="block text-xs font-medium text-gray-600 mb-1">ID（唯一标识）*</label><input v-model="customForm.id" :disabled="editingCustomId" type="text" placeholder="如 my-provider" class="input" required></div>
               <div><label class="block text-xs font-medium text-gray-600 mb-1">显示名称 *</label><input v-model="customForm.label" type="text" placeholder="如 My Provider" class="input" required></div>
               <div class="col-span-2"><label class="block text-xs font-medium text-gray-600 mb-1">Base URL *</label><input v-model="customForm.baseUrl" type="text" placeholder="https://api.example.com/v1" class="input" required></div>
               <div><label class="block text-xs font-medium text-gray-600 mb-1">适配器</label>
@@ -314,10 +314,10 @@ func renderDashboardTemplate(providerDataJSON string) string {
               </div>
               <div><label class="block text-xs font-medium text-gray-600 mb-1">优先级</label><input v-model.number="customForm.priority" type="number" min="1" max="100" class="input"></div>
               <div class="col-span-2"><label class="block text-xs font-medium text-gray-600 mb-1">模型列表（逗号分隔）</label><input v-model="customForm.modelsStr" type="text" placeholder="model-a, model-b" class="input"></div>
-              <div class="col-span-2"><label class="block text-xs font-medium text-gray-600 mb-1">API Key（可选，用于拉取模型/代理请求）</label><input v-model="customForm.key" type="password" placeholder="粘贴 API Key" class="input"></div>
+              <div class="col-span-2"><label class="block text-xs font-medium text-gray-600 mb-1">API Key（可选，用于拉取模型/代理请求）</label><input v-model="customForm.key" @input="customKeyChanged = true" type="password" :placeholder="editingCustomId ? '留空则保持现有密钥' : '粘贴 API Key'" class="input"></div>
             </div>
             <button type="submit" :disabled="customLoading" class="btn btn-primary text-sm w-full">
-              <span v-if="!customLoading">添加自定义 Provider</span><span v-else><i class="fas fa-circle-notch fa-spin"></i> 添加中...</span>
+              <span v-if="!customLoading">{{ editingCustomId ? '保存修改' : '添加自定义 Provider' }}</span><span v-else><i class="fas fa-circle-notch fa-spin"></i> 提交中...</span>
             </button>
           </form>
           <div v-if="customProviders.length" class="space-y-2">
@@ -331,6 +331,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
                   <button @click="updateCustomProviderKey(cp)" :disabled="cp._saving" class="btn btn-secondary text-xs whitespace-nowrap">
                     <span v-if="!cp._saving">更新密钥</span><span v-else><i class="fas fa-circle-notch fa-spin"></i></span>
                   </button>
+                  <button @click="editCustomProvider(cp)" class="btn btn-secondary text-xs whitespace-nowrap"><i class="fas fa-edit"></i> 编辑</button>
                 </div>
               </div>
               <button @click="removeCustomProvider(cp.id)" class="btn-danger text-xs ml-3"><i class="fas fa-trash-alt"></i></button>
@@ -515,6 +516,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
             <div v-if="pgStreamingActive" class="flex items-center gap-2 text-xs text-green-600">
               <span class="flex w-2 h-2 bg-green-500 rounded-full animate-pulse"></span> 流式输出中...
             </div>
+            <div v-if="pgReasoning" class="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-2 text-xs text-amber-800 whitespace-pre-wrap font-mono"><div class="font-semibold mb-1 text-amber-600"><i class="fas fa-brain mr-1"></i>思考过程</div>{{ pgReasoning }}</div>
             <div class="bg-gray-50 border rounded-lg p-4 min-h-48 max-h-96 overflow-y-auto whitespace-pre-wrap font-mono text-sm leading-relaxed"
               v-text="pgOutput || '点击发送按钮来测试模型'"></div>
             <div v-if="pgStats" class="grid grid-cols-4 gap-2 text-xs">
@@ -583,6 +585,8 @@ func renderDashboardTemplate(providerDataJSON string) string {
           passwordLoading: false,
           // Custom provider
           showCustomForm: false,
+          editingCustomId: '',
+          customKeyChanged: false,
           customForm: { id: '', label: '', baseUrl: '', adapter: 'openai', priority: 50, modelsStr: '', key: '' },
           customLoading: false,
           customProviders: [],
@@ -596,6 +600,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
           pgStreaming: true,
           pgStreamingActive: false,
           pgOutput: '',
+          pgReasoning: '',
           pgStats: null,
           pgLatency: 0,
           pgError: '',
@@ -809,10 +814,13 @@ func renderDashboardTemplate(providerDataJSON string) string {
         async fetchModels(type, save = false) {
           try {
             const res = await fetch('/api/models?type=' + encodeURIComponent(type));
+            const data = await res.json().catch(() => ({}));
             if (res.ok) {
-              const data = await res.json();
-              this.providerModels[type] = data.models;
+              this.providerModels[type] = data.models || [];
+              if (data.error) this.showToast(type + ': ' + data.error, 'error');
               if (save) this.saveConfig();
+            } else if (data.error) {
+              this.showToast(type + ': ' + data.error, 'error');
             }
           } catch(e) { console.error('Fetch models error:', e); }
         },
@@ -830,29 +838,56 @@ func renderDashboardTemplate(providerDataJSON string) string {
             }
           } catch(e) { console.error('Fetch custom providers error:', e); }
         },
+        toggleCustomForm() {
+          if (this.showCustomForm) {
+            // Closing the form: drop any pending edit state.
+            this.editingCustomId = '';
+            this.customKeyChanged = false;
+            this.customForm = { id:'', label:'', baseUrl:'', adapter:'openai', priority:50, modelsStr:'', key:'' };
+          }
+          this.showCustomForm = !this.showCustomForm;
+        },
+        editCustomProvider(cp) {
+          this.editingCustomId = cp.id;
+          this.customKeyChanged = false;
+          this.customForm = {
+            id: cp.id, label: cp.label, baseUrl: cp.baseUrl,
+            adapter: cp.adapter || 'openai', priority: cp.priority || 50,
+            modelsStr: (cp.models || []).join(', '), key: ''
+          };
+          this.showCustomForm = true;
+        },
         async addCustomProvider() {
           if (!this.customForm.id || !this.customForm.label || !this.customForm.baseUrl) {
             this.showToast('请填写 ID、名称和 Base URL', 'error'); return;
           }
           this.customLoading = true;
+          const isEdit = !!this.editingCustomId;
           try {
+            // In edit mode, the key is server-side only. Only send it when the
+            // user actually typed a new value; otherwise omit so the existing
+            // key is preserved (the backend clears the key on an empty string).
             const body = {
               id: this.customForm.id, label: this.customForm.label, baseUrl: this.customForm.baseUrl,
               adapter: this.customForm.adapter, priority: this.customForm.priority,
               models: this.customForm.modelsStr ? this.customForm.modelsStr.split(',').map(s => s.trim()).filter(Boolean) : [],
-              key: this.customForm.key || '',
             };
+            if (!isEdit || this.customKeyChanged) {
+              body.key = this.customForm.key || '';
+            }
             const res = await fetch('/api/providers/custom', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
             if (res.ok) {
-              this.showToast('自定义 Provider 添加成功');
+              this.showToast(isEdit ? '自定义 Provider 已更新' : '自定义 Provider 添加成功');
               this.showCustomForm = false;
+              this.editingCustomId = '';
+              this.customKeyChanged = false;
               const newId = this.customForm.id;
               this.customForm = { id:'', label:'', baseUrl:'', adapter:'openai', priority:50, modelsStr:'', key:'' };
               await this.fetchCustomProviders();
               if (newId) await this.fetchModels(newId, false);
             } else {
               const d = await res.json();
-              this.showToast(d.error || '添加失败', 'error');
+              this.showToast(d.error || (isEdit ? '更新失败' : '添加失败'), 'error');
             }
           } catch { this.showToast('网络错误', 'error'); }
           finally { this.customLoading = false; }
@@ -888,6 +923,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
           if (!this.pgModel || !this.pgUser) { this.showToast('请选择模型并输入消息', 'error'); return; }
           this.pgLoading = true;
           this.pgOutput = '';
+          this.pgReasoning = '';
           this.pgStats = null;
           this.pgLatency = 0;
           this.pgError = '';
@@ -924,8 +960,12 @@ func renderDashboardTemplate(providerDataJSON string) string {
                   if (data === '[DONE]') break;
                   try {
                     const chunk = JSON.parse(data);
-                    const delta = chunk.choices?.[0]?.delta?.content;
-                    if (delta) this.pgOutput += delta;
+                    const delta = chunk.choices?.[0]?.delta;
+                    // Reasoning models (e.g. NVIDIA Nemotron) stream the thought
+                    // process in reasoning_content and the final answer in
+                    // content. Capture both so the playground never looks blank.
+                    if (delta?.reasoning_content) this.pgReasoning += delta.reasoning_content;
+                    if (delta?.content) this.pgOutput += delta.content;
                     if (chunk.usage) usage = chunk.usage;
                   } catch {}
                 }
@@ -940,7 +980,9 @@ func renderDashboardTemplate(providerDataJSON string) string {
               });
               if (!res.ok) { const txt = await res.text(); throw new Error(res.status+': '+(txt||'请求失败').substring(0,500)); }
               const data = await res.json();
-              this.pgOutput = data.choices?.[0]?.message?.content || '(无内容)';
+              const msg = data.choices?.[0]?.message || {};
+              this.pgOutput = msg.content || msg.reasoning_content || '(无内容)';
+              if (msg.reasoning_content) this.pgReasoning = msg.reasoning_content;
               this.pgLatency = Date.now() - startTime;
               const u = data.usage;
               if (u) this.pgStats = { promptTokens:u.prompt_tokens||0, completionTokens:u.completion_tokens||0, totalTokens:u.total_tokens||0 };
@@ -956,7 +998,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
           if (this.pgAbortController) { this.pgAbortController.abort(); this.pgAbortController = null; }
         },
         onPgModelChange() {
-          this.pgOutput = ''; this.pgStats = null; this.pgError = ''; this.pgLatency = 0;
+          this.pgOutput = ''; this.pgReasoning = ''; this.pgStats = null; this.pgError = ''; this.pgLatency = 0;
         },
         // Password
         async changePassword() {

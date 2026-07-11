@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -115,7 +116,10 @@ func HandleConfigPost(w http.ResponseWriter, r *http.Request) {
 		if !ok || def.BaseURL == "" {
 			continue
 		}
-		fetched := adapters.FetchProviderModels(def, p.Key)
+		fetched, err := adapters.FetchProviderModels(def, p.Key)
+		if err != nil {
+			log.Printf("[models] fetch %s failed: %v", p.Type, err)
+		}
 		if len(fetched) > 0 {
 			models[p.Type] = fetched
 			storage.SaveCachedModels(p.Type, fetched)
@@ -259,7 +263,25 @@ func HandleCustomProvidersPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var body config.CustomProvider
+	// CustomProvider POST accepts an optional `key`. We decode into a local
+	// struct so we can distinguish "field absent" from "field present but empty":
+	// an absent key preserves the existing stored key (so editing other fields
+	// never wipes the secret), while an explicit empty string clears it. This
+	// also lets the dashboard's key-only update endpoint clear a key.
+	var body struct {
+		ID        string   `json:"id"`
+		Label     string   `json:"label"`
+		BaseURL   string   `json:"baseUrl"`
+		Category  string   `json:"category"`
+		Website   string   `json:"website"`
+		Docs      string   `json:"docs"`
+		APIKeyURL string   `json:"apiKeyUrl"`
+		Icon      string   `json:"icon"`
+		Adapter   string   `json:"adapter"`
+		Priority  int      `json:"priority"`
+		Models    []string `json:"models"`
+		Key       *string  `json:"key"`
+	}
 	if err := utils.ParseJSON(r, &body); err != nil {
 		utils.JSON(w, 400, map[string]string{"error": "Invalid JSON"})
 		return
@@ -341,10 +363,12 @@ func HandleCustomProvidersPost(w http.ResponseWriter, r *http.Request) {
 		merged.Models = body.Models
 	}
 
-	// Key is optional and never echoed back to the client. On upsert the client
-	// always sends the authoritative key value (empty string = clear). This lets
-	// the dashboard update just the key without resending all other fields.
-	merged.Key = strings.TrimSpace(body.Key)
+	// Key is optional and never echoed back to the client. A nil pointer means
+	// the field was absent from the request, so we keep the existing key. An
+	// explicit (even empty) value replaces it, letting callers clear the key.
+	if body.Key != nil {
+		merged.Key = strings.TrimSpace(*body.Key)
+	}
 
 	if idx >= 0 {
 		cfg.CustomProviders[idx] = merged
@@ -445,6 +469,11 @@ func HandleModels(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if provider == nil {
+		var types []string
+		for _, p := range cfg.Providers {
+			types = append(types, p.Type)
+		}
+		log.Printf("[models] provider %q not found in cfg.Providers (have: %v)", pType, types)
 		utils.JSON(w, 404, map[string]string{"error": "Provider not found"})
 		return
 	}
@@ -455,7 +484,16 @@ func HandleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models := adapters.FetchProviderModels(def, provider.Key)
+	models, err := adapters.FetchProviderModels(def, provider.Key)
+	if err != nil {
+		log.Printf("[models] fetch %s failed: %v", pType, err)
+		utils.JSON(w, 200, map[string]interface{}{
+			"models": models,
+			"type":   pType,
+			"error":  "拉取上游模型失败：" + err.Error(),
+		})
+		return
+	}
 	if len(models) > 0 {
 		storage.SaveCachedModels(pType, models)
 	}

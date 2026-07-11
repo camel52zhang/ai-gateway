@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -58,10 +59,14 @@ func InitStorage() *Env {
 	}
 
 	var err error
-	db, err = sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=wal_autocheckpoint(100)")
+	db, err = sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=wal_autocheckpoint(100)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		log.Fatalf("[db] Failed to open: %v", err)
 	}
+	// Give the pool a single writer connection so concurrent config writes
+	// serialize through SQLite instead of contending. Read-heavy paths use the
+	// in-memory config cache, so a small pool does not bottleneck traffic.
+	db.SetMaxOpenConns(1)
 
 	// Lower autocheckpoint threshold (100 pages ≈ 400KB) so SQLite folds WAL
 	// frames back into the main db passively, in addition to the explicit
@@ -147,8 +152,36 @@ func KVPut(key string, value interface{}, ttlSeconds ...int) error {
 		expiresAt = time.Now().UnixMilli() + int64(ttlSeconds[0])*1000
 	}
 
-	_, err := db.Exec(`INSERT OR REPLACE INTO kv (key, value, expires_at) VALUES (?, ?, ?)`, key, strVal, expiresAt)
-	return err
+	// Retry on SQLITE_BUSY / locked. Under WAL, a write that cannot acquire the
+	// lock returns a busy error instead of blocking; busy_timeout mitigates
+	// most contention, but we still retry a few times so a rapid sequence of
+	// writes (e.g. first-run config generation immediately followed by a
+	// provider add) never silently drops a config update.
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		_, lastErr = db.Exec(`INSERT OR REPLACE INTO kv (key, value, expires_at) VALUES (?, ?, ?)`, key, strVal, expiresAt)
+		if lastErr == nil {
+			return nil
+		}
+		if isSQLiteBusy(lastErr) {
+			time.Sleep(time.Duration(attempt+1) * 20 * time.Millisecond)
+			continue
+		}
+		return lastErr
+	}
+	return lastErr
+}
+
+// isSQLiteBusy reports whether err is a SQLITE_BUSY / locked condition that is
+// worth retrying rather than surfacing to the caller.
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "SQLITE_BUSY") ||
+		strings.Contains(msg, "table is locked")
 }
 
 func KVDelete(key string) error {

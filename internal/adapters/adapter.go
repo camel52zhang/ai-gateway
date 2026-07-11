@@ -30,10 +30,10 @@ var modelFetchClient = &http.Client{Timeout: 15 * time.Second}
 
 // ProxyResult holds the result of a proxy call
 type ProxyResult struct {
-	Response   *http.Response
-	Usage      Usage
-	LatencyMs  int64
-	Streaming  bool
+	Response  *http.Response
+	Usage     Usage
+	LatencyMs int64
+	Streaming bool
 }
 
 // Usage tracks token counts
@@ -1122,8 +1122,8 @@ func convertCohereToOpenAI(cohereResp map[string]interface{}, body map[string]in
 		"model":   body["model"],
 		"choices": []map[string]interface{}{
 			{
-				"index":        0,
-				"message":      message,
+				"index":         0,
+				"message":       message,
 				"finish_reason": finishReason,
 			},
 		},
@@ -1169,31 +1169,35 @@ func convertToolCallsFromCohere(tcs []interface{}) []interface{} {
 // is queried via its v1beta/models endpoint; providers without a public list API
 // (e.g. Cohere) fall back to their static model list. Returns nil if nothing usable
 // was found.
-func FetchProviderModels(def config.Provider, apiKey string) []string {
+func FetchProviderModels(def config.Provider, apiKey string) ([]string, error) {
 	switch def.Adapter {
 	case "google":
-		if models := fetchGoogleModels(def.BaseURL, apiKey); len(models) > 0 {
-			return models
+		if models, err := fetchGoogleModels(def.BaseURL, apiKey); err != nil {
+			return nil, err
+		} else if len(models) > 0 {
+			return models, nil
 		}
-		return def.Models
+		return def.Models, nil
 	case "cohere":
 		// Cohere exposes no public model-listing endpoint; rely on the static list.
-		return def.Models
+		return def.Models, nil
 	default:
-		if models := fetchOpenAIModels(def.BaseURL, apiKey); len(models) > 0 {
-			return models
+		if models, err := fetchOpenAIModels(def.BaseURL, apiKey); err != nil {
+			return nil, err
+		} else if len(models) > 0 {
+			return models, nil
 		}
-		return def.Models
+		return def.Models, nil
 	}
 }
 
-func fetchOpenAIModels(baseURL, apiKey string) []string {
+func fetchOpenAIModels(baseURL, apiKey string) ([]string, error) {
 	base := strings.TrimRight(baseURL, "/")
 	modelsURL := base + "/v1/models"
 	if strings.HasSuffix(base, "/v1") {
 		modelsURL = base + "/models"
 	}
-	return listModels(modelsURL, apiKey, func(data map[string]interface{}) []string {
+	return listModels(modelsURL, apiKey, func(data map[string]interface{}) ([]string, error) {
 		var out []string
 		if arr, ok := data["data"].([]interface{}); ok {
 			for _, item := range arr {
@@ -1204,14 +1208,14 @@ func fetchOpenAIModels(baseURL, apiKey string) []string {
 				}
 			}
 		}
-		return out
+		return out, nil
 	})
 }
 
-func fetchGoogleModels(baseURL, apiKey string) []string {
+func fetchGoogleModels(baseURL, apiKey string) ([]string, error) {
 	base := strings.TrimRight(baseURL, "/")
 	modelsURL := base + "/v1beta/models?key=" + apiKey
-	return listModels(modelsURL, "", func(data map[string]interface{}) []string {
+	return listModels(modelsURL, "", func(data map[string]interface{}) ([]string, error) {
 		var out []string
 		if arr, ok := data["models"].([]interface{}); ok {
 			for _, item := range arr {
@@ -1224,31 +1228,31 @@ func fetchGoogleModels(baseURL, apiKey string) []string {
 				}
 			}
 		}
-		return out
+		return out, nil
 	})
 }
 
 // listModels performs a GET against the given URL and decodes the model list using
 // the provided parse callback. It uses the timeout-guarded modelFetchClient.
-func listModels(url, apiKey string, parse func(map[string]interface{}) []string) []string {
+func listModels(url, apiKey string, parse func(map[string]interface{}) ([]string, error)) ([]string, error) {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	resp, err := modelFetchClient.Do(req)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("request %s: %w", url, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil
+		return nil, fmt.Errorf("upstream %s returned HTTP %d", url, resp.StatusCode)
 	}
 	var data map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil
+		return nil, fmt.Errorf("decode response from %s: %w", url, err)
 	}
 	return parse(data)
 }

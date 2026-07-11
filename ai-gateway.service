@@ -1,0 +1,20 @@
+[Unit]
+Description=AI Gateway Go
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ai-gateway
+ExecStart=/opt/ai-gateway/start.sh
+Restart=on-failure
+RestartSec=3
+User=ai-gateway
+Group=ai-gateway
+# 清掉代理环境变量，避免上游调用被路由到无效地址
+Environment=HTTP_PROXY=
+Environment=HTTPS_PROXY=
+# 可选：自定义端口
+# Environment=PORT=7000
+
+[Install]
+WantedBy=multi-user.target

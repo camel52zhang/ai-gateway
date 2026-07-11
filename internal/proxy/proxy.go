@@ -186,7 +186,10 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 		} else if p.Key != "" {
 			def, defOk := providers.ResolveDefinition(p.Type, cfg.CustomProviders)
 			if defOk && def.BaseURL != "" {
-				fetched := adapters.FetchProviderModels(def, p.Key)
+				fetched, ferr := adapters.FetchProviderModels(def, p.Key)
+				if ferr != nil {
+					log.Printf("[models] fetch %s failed: %v", p.Type, ferr)
+				}
 				if len(fetched) > 0 {
 					cached[p.Type] = fetched
 					storage.SaveCachedModels(p.Type, fetched)
@@ -374,11 +377,28 @@ func executeStreamingProxy(
 		cb.RecordSuccess(provider.Type)
 		go storage.UpdateProviderHealth(provider.Type, true)
 
+		// Streaming (SSE) responses must NOT inherit the upstream's
+		// Content-Length / Transfer-Encoding / Content-Encoding. Browsers trust
+		// a declared Content-Length and wait for exactly that many bytes, but a
+		// live SSE stream is unbounded — so the page hangs on "streaming..."
+		// forever. Strip those and force proper chunked SSE framing.
+		skip := map[string]bool{
+			"content-length":    true,
+			"transfer-encoding": true,
+			"content-encoding":  true,
+		}
 		for k, v := range upstreamResp.Header {
+			if skip[strings.ToLower(k)] {
+				continue
+			}
 			for _, vv := range v {
 				w.Header().Add(k, vv)
 			}
 		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no") // disable proxy buffering (nginx)
 		w.WriteHeader(statusCode)
 
 		copyErr := copyWithFlush(w, upstreamResp.Body)
@@ -575,7 +595,10 @@ func handleAutoProxy(w http.ResponseWriter, r *http.Request, body map[string]int
 		if len(models) == 0 {
 			def, defOk := providers.ResolveDefinition(p.Type, cfg.CustomProviders)
 			if defOk && def.BaseURL != "" {
-				fetched := adapters.FetchProviderModels(def, p.Key)
+				fetched, ferr := adapters.FetchProviderModels(def, p.Key)
+				if ferr != nil {
+					log.Printf("[models] fetch %s failed: %v", p.Type, ferr)
+				}
 				if len(fetched) > 0 {
 					cached[p.Type] = fetched
 					models = fetched
@@ -660,17 +683,17 @@ func handleAutoProxy(w http.ResponseWriter, r *http.Request, body map[string]int
 			upstreamResp.Body.Close()
 			bodyStr := utils.Truncate(string(respBody), 200)
 
-		statusCode := upstreamResp.StatusCode
-		cat := classifyError(nil, statusCode)
-		if breakerWorthy(nil, statusCode) {
-			cb.RecordFailure(c.Type)
-		}
-		go storage.RecordFailureMetric(c.Type, cat)
-		go storage.AppendErrorLog(buildErrorEvent(c.Type, c.Model, cat, requestID, statusCode, "", bodyStr))
+			statusCode := upstreamResp.StatusCode
+			cat := classifyError(nil, statusCode)
+			if breakerWorthy(nil, statusCode) {
+				cb.RecordFailure(c.Type)
+			}
+			go storage.RecordFailureMetric(c.Type, cat)
+			go storage.AppendErrorLog(buildErrorEvent(c.Type, c.Model, cat, requestID, statusCode, "", bodyStr))
 
-		errorsList = append(errorsList, fmt.Sprintf("%s/%s: %d", c.Type, c.Model, statusCode))
-		continue
-	}
+			errorsList = append(errorsList, fmt.Sprintf("%s/%s: %d", c.Type, c.Model, statusCode))
+			continue
+		}
 
 		def, _ := providers.ResolveDefinition(c.Type, cfg.CustomProviders)
 		result, proxyErr := adapters.ProxyWithProvider(candidateBody, def, c.Key)
@@ -714,16 +737,16 @@ func handleAutoProxy(w http.ResponseWriter, r *http.Request, body map[string]int
 		result.Response.Body.Close()
 		bodyStr := utils.Truncate(string(respBody), 200)
 
-	statusCode := result.Response.StatusCode
-	cat := classifyError(nil, statusCode)
-	if breakerWorthy(nil, statusCode) {
-		cb.RecordFailure(c.Type)
-	}
-	go storage.RecordFailureMetric(c.Type, cat)
-	go storage.AppendErrorLog(buildErrorEvent(c.Type, c.Model, cat, requestID, statusCode, "", bodyStr))
+		statusCode := result.Response.StatusCode
+		cat := classifyError(nil, statusCode)
+		if breakerWorthy(nil, statusCode) {
+			cb.RecordFailure(c.Type)
+		}
+		go storage.RecordFailureMetric(c.Type, cat)
+		go storage.AppendErrorLog(buildErrorEvent(c.Type, c.Model, cat, requestID, statusCode, "", bodyStr))
 
-	errorsList = append(errorsList, fmt.Sprintf("%s/%s: %d", c.Type, c.Model, statusCode))
-}
+		errorsList = append(errorsList, fmt.Sprintf("%s/%s: %d", c.Type, c.Model, statusCode))
+	}
 
 	if attempted == 0 {
 		// Nothing was actually tried because every candidate was skipped by the

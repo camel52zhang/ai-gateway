@@ -35,7 +35,7 @@
 
 ## Build & Run
 ```powershell
-cd D:\tools\opencode\api-gateway
+cd D:\tools\qlcaw\api-gateway
 go build -o ai-gateway.exe .
 Start-Process -FilePath ".\ai-gateway.exe" -WindowStyle Minimized
 # Visit http://localhost:7000/login
