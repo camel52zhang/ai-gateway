@@ -45,7 +45,10 @@ type Usage struct {
 
 // buildChatURL converts an OpenAI-compatible provider base URL into its
 // chat/completions endpoint. It tolerates base URLs that already end with
-// /v1, /v1/chat/completions, or the bare host.
+// /v1/chat/completions, /v1, or a custom OpenAI-compatible path (e.g. some
+// providers expose /openai/chat/completions without a /v1 segment). It does NOT
+// blindly inject a /v1, because that breaks providers like Longcat whose base is
+// https://api.longcat.chat/openai (correct chat path: .../openai/chat/completions).
 func buildChatURL(baseURL string) string {
 	base := strings.TrimRight(baseURL, "/")
 	if strings.HasSuffix(base, "/chat/completions") {
@@ -54,7 +57,9 @@ func buildChatURL(baseURL string) string {
 	if strings.HasSuffix(base, "/v1") {
 		return base + "/chat/completions"
 	}
-	return base + "/v1/chat/completions"
+	// Already a full custom path (e.g. .../openai) -> append directly; do not
+	// force a /v1 segment. If the operator wants /v1 they should set it in BaseURL.
+	return base + "/chat/completions"
 }
 
 // ProxyWithProvider dispatches a proxy call using the (possibly custom) provider
@@ -1193,8 +1198,18 @@ func FetchProviderModels(def config.Provider, apiKey string) ([]string, error) {
 
 func fetchOpenAIModels(baseURL, apiKey string) ([]string, error) {
 	base := strings.TrimRight(baseURL, "/")
-	modelsURL := base + "/v1/models"
-	if strings.HasSuffix(base, "/v1") {
+	// Build the models endpoint from the base URL, honoring a base that already
+	// ends with /v1 (-> /models) or a custom OpenAI-compatible path without /v1
+	// (e.g. Longcat base https://api.longcat.chat/openai -> .../openai/models).
+	// This mirrors buildChatURL's convention so chat and model-listing resolve
+	// consistently for the same BaseURL. (Parity with v4.)
+	var modelsURL string
+	switch {
+	case strings.HasSuffix(base, "/v1"):
+		modelsURL = base + "/models"
+	case strings.HasSuffix(base, "/models"):
+		modelsURL = base
+	default:
 		modelsURL = base + "/models"
 	}
 	return listModels(modelsURL, apiKey, func(data map[string]interface{}) ([]string, error) {

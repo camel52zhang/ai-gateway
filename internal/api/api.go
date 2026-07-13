@@ -37,6 +37,7 @@ func HandleConfigGet(w http.ResponseWriter, r *http.Request) {
 		"providers":       cfg.Providers,
 		"stats":           storage.GetStats(),
 		"models":          cfg.Models,
+		"modelEnabled":    cfg.ModelEnabled,
 		"requestLog":      truncateLog(storage.GetRequestLog(), 50),
 		"errorLog":        truncateLogErrors(storage.GetErrorLog(), 50),
 		"providerLatency": storage.GetProviderLatency(),
@@ -52,8 +53,9 @@ func HandleConfigPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Providers  []config.UserProvider `json:"providers"`
-		UnifiedKey string                `json:"unifiedKey"`
+		Providers    []config.UserProvider `json:"providers"`
+		UnifiedKey   string                `json:"unifiedKey"`
+		ModelEnabled map[string]bool       `json:"modelEnabled"`
 	}
 	if err := utils.ParseJSON(r, &body); err != nil {
 		utils.JSON(w, 400, map[string]string{"error": "Invalid JSON"})
@@ -71,6 +73,17 @@ func HandleConfigPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.UnifiedKey != "" {
 		cfg.UnifiedKey = body.UnifiedKey
+	}
+	// Merge user model-enable toggles. We keep existing entries from the stored
+	// config and overlay the client-provided delta, so a partial update never
+	// flips unrelated models back on.
+	if body.ModelEnabled != nil {
+		if cfg.ModelEnabled == nil {
+			cfg.ModelEnabled = make(map[string]bool)
+		}
+		for k, v := range body.ModelEnabled {
+			cfg.ModelEnabled[k] = v
+		}
 	}
 
 	// Re-merge custom-provider keys into cfg.Providers. The dashboard tracks
@@ -132,6 +145,17 @@ func HandleConfigPost(w http.ResponseWriter, r *http.Request) {
 	}
 	for k, v := range models {
 		cfg.Models[k] = v
+		// Newly fetched models default to enabled (a model that was just
+		// discovered should show up). Only an explicit false keeps it hidden.
+		if cfg.ModelEnabled == nil {
+			cfg.ModelEnabled = make(map[string]bool)
+		}
+		for _, m := range v {
+			key := k + "/" + m
+			if _, seen := cfg.ModelEnabled[key]; !seen {
+				cfg.ModelEnabled[key] = true
+			}
+		}
 	}
 
 	// Drop stale model caches for providers that are no longer keyed (key
@@ -142,6 +166,14 @@ func HandleConfigPost(w http.ResponseWriter, r *http.Request) {
 		if !keyedTypes[t] {
 			delete(cfg.Models, t)
 			storage.DeleteCachedModels(t)
+			// also drop enabled-state entries for that provider's models
+			if cfg.ModelEnabled != nil {
+				for k := range cfg.ModelEnabled {
+					if strings.HasPrefix(k, t+"/") {
+						delete(cfg.ModelEnabled, k)
+					}
+				}
+			}
 		}
 	}
 
@@ -168,6 +200,10 @@ func HandleKeyRegenerate(w http.ResponseWriter, r *http.Request) {
 }
 
 func HandleProviders(w http.ResponseWriter, r *http.Request) {
+	if !storage.IsAuthenticated(r) {
+		utils.JSON(w, 401, map[string]string{"error": "Authentication required"})
+		return
+	}
 	categories := providers.GetByCategory()
 	list := providers.List()
 

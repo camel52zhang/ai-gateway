@@ -215,5 +215,6 @@ func utilsBuildChatURL(baseURL string) string {
 	if strings.HasSuffix(base, "/v1") {
 		return base + "/chat/completions"
 	}
-	return base + "/v1/chat/completions"
+	// No /v1 segment: honor the user-provided base as-is. Never inject /v1.
+	return base + "/chat/completions"
 }

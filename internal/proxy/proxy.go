@@ -209,6 +209,19 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 		models = []map[string]string{}
 	}
 
+	// Advertise a virtual "auto" model so OpenAI-compatible downstream clients
+	// (Codex, WorkBuddy, Cursor, etc.) can simply pick "auto" from their model
+	// dropdown instead of specifying a concrete upstream model. The proxy's
+	// handleAutoProxy routes "auto" to the best available provider using
+	// priority ordering, fallback, rate-limit and circuit-breaker awareness.
+	if len(cfg.Providers) > 0 {
+		models = append([]map[string]string{{
+			"id":       "auto",
+			"object":   "model",
+			"owned_by": "gateway",
+		}}, models...)
+	}
+
 	utils.JSON(w, 200, map[string]interface{}{
 		"object": "list",
 		"data":   models,
@@ -401,9 +414,20 @@ func executeStreamingProxy(
 		w.Header().Set("X-Accel-Buffering", "no") // disable proxy buffering (nginx)
 		w.WriteHeader(statusCode)
 
-		copyErr := copyWithFlush(w, upstreamResp.Body)
-		if copyErr != nil {
-			log.Printf("[proxy] Streaming copy error for %s: %v", provider.Type, copyErr)
+		ct := upstreamResp.Header.Get("Content-Type")
+		if strings.Contains(strings.ToLower(ct), "text/event-stream") {
+			copyErr := copyWithFlush(w, upstreamResp.Body)
+			if copyErr != nil {
+				log.Printf("[proxy] Streaming copy error for %s: %v", provider.Type, copyErr)
+			}
+		} else {
+			// The upstream answered 2xx but did NOT return an SSE stream — most
+			// likely it silently ignored stream:true and replied with a single
+			// JSON completion (or a front proxy buffered the stream into one
+			// response). Re-emit it as a synthetic SSE stream so the dashboard's
+			// streaming parser renders the content instead of hanging forever on
+			// "流式输出中...".
+			convertCompletionToSSE(w, upstreamResp.Body, model)
 		}
 		return
 	}
@@ -674,7 +698,12 @@ func handleAutoProxy(w http.ResponseWriter, r *http.Request, body map[string]int
 					}
 				}
 				w.WriteHeader(upstreamResp.StatusCode)
-				copyWithFlush(w, upstreamResp.Body)
+				ct := upstreamResp.Header.Get("Content-Type")
+				if strings.Contains(strings.ToLower(ct), "text/event-stream") {
+					copyWithFlush(w, upstreamResp.Body)
+				} else {
+					convertCompletionToSSE(w, upstreamResp.Body, c.Model)
+				}
 				upstreamResp.Body.Close()
 				return
 			}
@@ -851,6 +880,90 @@ func copyWithFlush(w http.ResponseWriter, src io.Reader) error {
 			}
 			return err
 		}
+	}
+}
+
+// convertCompletionToSSE reads a complete (non-streaming) upstream JSON
+// completion and re-emits it as an OpenAI-style SSE stream. This guards against
+// providers (or front proxies) that silently ignore stream:true and return a
+// single JSON object even when the client asked for a stream: without it the
+// dashboard's streaming parser never sees a data: frame and hangs on
+// "流式输出中..." forever. If the payload cannot be interpreted as a completion,
+// it is forwarded verbatim as one SSE event so the client at least sees output.
+func convertCompletionToSSE(w http.ResponseWriter, src io.Reader, model string) {
+	flusher, _ := w.(http.Flusher)
+	body, _ := io.ReadAll(src)
+
+	emit := func(obj map[string]interface{}) {
+		b, _ := json.Marshal(obj)
+		fmt.Fprintf(w, "data: %s\n\n", string(b))
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
+	var c struct {
+		ID      string `json:"id"`
+		Choices []struct {
+			Index        int    `json:"index"`
+			Message      struct {
+				Role             string `json:"role"`
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage *struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+			TotalTokens      int64 `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &c); err == nil && len(c.Choices) > 0 {
+		idx := c.Choices[0].Index
+		msg := c.Choices[0].Message
+		emit(map[string]interface{}{
+			"id": c.ID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
+			"choices": []map[string]interface{}{{ "index": idx, "delta": map[string]interface{}{"role": "assistant"} }},
+		})
+		if msg.ReasoningContent != "" {
+			emit(map[string]interface{}{
+				"id": c.ID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
+				"choices": []map[string]interface{}{{ "index": idx, "delta": map[string]interface{}{"reasoning_content": msg.ReasoningContent} }},
+			})
+		}
+		if msg.Content != "" {
+			emit(map[string]interface{}{
+				"id": c.ID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
+				"choices": []map[string]interface{}{{ "index": idx, "delta": map[string]interface{}{"content": msg.Content} }},
+			})
+		}
+		var usage map[string]interface{}
+		if c.Usage != nil {
+			usage = map[string]interface{}{
+				"prompt_tokens":     c.Usage.PromptTokens,
+				"completion_tokens": c.Usage.CompletionTokens,
+				"total_tokens":      c.Usage.TotalTokens,
+			}
+		}
+		emit(map[string]interface{}{
+			"id": c.ID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
+			"choices": []map[string]interface{}{{ "index": idx, "delta": map[string]interface{}{}, "finish_reason": c.Choices[0].FinishReason }},
+			"usage":   usage,
+		})
+		fmt.Fprintf(w, "data: [DONE]\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return
+	}
+
+	// Unknown payload shape: forward it verbatim as a single SSE event so the
+	// client at least sees *something* rather than hanging.
+	fmt.Fprintf(w, "data: %s\n\n", string(body))
+	fmt.Fprintf(w, "data: [DONE]\n\n")
+	if flusher != nil {
+		flusher.Flush()
 	}
 }
 

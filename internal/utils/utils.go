@@ -160,7 +160,9 @@ func BuildModelsURL(baseURL string) string {
 	if strings.HasSuffix(base, "/v1") {
 		return base + "/models"
 	}
-	return base + "/v1/models"
+	// No /v1 segment: honor the user-provided base as-is (e.g. Longcat base
+	// https://api.longcat.chat/openai -> .../openai/models). Never inject /v1.
+	return base + "/models"
 }
 
 func BuildChatURL(baseURL string) string {
@@ -171,5 +173,6 @@ func BuildChatURL(baseURL string) string {
 	if strings.HasSuffix(base, "/v1") {
 		return base + "/chat/completions"
 	}
-	return base + "/v1/chat/completions"
+	// No /v1 segment: honor the user-provided base as-is. Never inject /v1.
+	return base + "/chat/completions"
 }

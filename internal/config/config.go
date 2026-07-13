@@ -48,6 +48,10 @@ type Config struct {
 	UnifiedKey      string                    `json:"unifiedKey"`
 	CustomProviders []CustomProvider          `json:"customProviders"`
 	Models          map[string][]string       `json:"models"`
+	// ModelEnabled maps "provider/model" -> whether the model is user-enabled.
+	// Default (absent key) is enabled; only an explicit false disables it. This
+	// lets operators hide models they don't want to surface in the Playground.
+	ModelEnabled    map[string]bool         `json:"modelEnabled"`
 	Stats           Stats                     `json:"stats"`
 	RequestLog      []RequestLogEntry         `json:"requestLog"`
 	ErrorLog        []ErrorLogEntry           `json:"errorLog"`
@@ -94,6 +98,7 @@ func DefaultConfig() *Config {
 		Providers:       []UserProvider{},
 		CustomProviders: []CustomProvider{},
 		Models:          map[string][]string{},
+		ModelEnabled:    map[string]bool{},
 		Stats:           Stats{},
 		RequestLog:      []RequestLogEntry{},
 		ErrorLog:        []ErrorLogEntry{},

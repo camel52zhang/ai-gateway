@@ -89,6 +89,7 @@ func main() {
 			"providers":  buildProviderList(),
 		}
 		providerJSON, _ := json.Marshal(providerData)
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 		utils.HTML(w, web.RenderDashboard(string(providerJSON)))
 	})
 

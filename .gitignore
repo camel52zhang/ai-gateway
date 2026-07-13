@@ -3,6 +3,10 @@
 *.exe~
 ai-gateway
 ai-gateway.exe
+ai-gateway-linux-amd64
+
+# --- Project-internal agent memory / tooling (not for public repo) ---
+.workbuddy/
 
 # --- Runtime data (SQLite WAL + shm + backups) ---
 /data/

@@ -1,0 +1,17 @@
+# 版本控制与本地元数据（不应进入构建上下文）
+.git
+.workbuddy
+
+# 运行时数据：SQLite 库及其 WAL 文件（容器内由命名卷提供，不烧进镜像）
+data
+*.db
+*.db-shm
+*.db-wal
+test_local.db
+test_local.db-shm
+test_local.db-wal
+
+# 已编译的二进制（让 Docker 用源码重新构建，保持镜像可复现）
+*.exe
+ai-gateway
+ai-gateway-linux-amd64

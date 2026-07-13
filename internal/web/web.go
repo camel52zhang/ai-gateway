@@ -299,10 +299,8 @@ func renderDashboardTemplate(providerDataJSON string) string {
           <hr class="my-6 border-gray-200">
           <div class="flex justify-between items-center mb-4">
             <h3 class="font-semibold">自定义 Provider</h3>
-            <button @click="toggleCustomForm" class="btn btn-secondary text-xs">
-              <i :class="showCustomForm ? 'fas fa-times' : 'fas fa-plus'"></i>
-              {{ showCustomForm ? '取消' : (editingCustomId ? '取消编辑' : '添加') }}
-            </button>
+            <button v-if="!showCustomForm" @click="openAddCustomForm" class="btn btn-secondary text-xs"><i class="fas fa-plus"></i> 添加</button>
+            <button v-else @click="closeCustomForm" class="btn btn-secondary text-xs"><i class="fas fa-times"></i> {{ editingCustomId ? '取消编辑' : '取消' }}</button>
           </div>
           <form v-if="showCustomForm" @submit.prevent="addCustomProvider" class="p-4 bg-gray-50 rounded-lg space-y-3 mb-3">
             <div class="grid grid-cols-2 gap-3">
@@ -334,7 +332,11 @@ func renderDashboardTemplate(providerDataJSON string) string {
                   <button @click="editCustomProvider(cp)" class="btn btn-secondary text-xs whitespace-nowrap"><i class="fas fa-edit"></i> 编辑</button>
                 </div>
               </div>
-              <button @click="removeCustomProvider(cp.id)" class="btn-danger text-xs ml-3"><i class="fas fa-trash-alt"></i></button>
+              <button v-if="pendingDeleteId !== cp.id" @click="removeCustomProvider(cp.id)" class="btn-danger text-xs ml-3" title="删除"><i class="fas fa-trash-alt"></i></button>
+              <span v-else class="flex items-center gap-1 ml-3">
+                <button @click="confirmDelete" class="btn-danger text-xs">确认?</button>
+                <button @click="cancelDelete" class="btn btn-secondary text-xs">取消</button>
+              </span>
             </div>
           </div>
           <div v-else-if="!showCustomForm" class="text-xs text-gray-400 p-2">暂无自定义 Provider。点击"添加"来接入你自己的 API 服务。</div>
@@ -346,7 +348,13 @@ func renderDashboardTemplate(providerDataJSON string) string {
         <div class="card">
           <div class="flex justify-between items-center mb-6">
             <h3 class="font-semibold">模型状态</h3>
-            <button @click="refreshAllModels" class="btn btn-secondary text-xs"><i class="fas fa-sync-alt mr-1"></i>刷新全部</button>
+            <div class="flex items-center gap-3">
+              <label class="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer select-none" title="显示已隐藏（关闭启用）的模型，便于重新开启">
+                <input type="checkbox" v-model="showHidden" class="w-3.5 h-3.5 accent-indigo-600">
+                显示已隐藏模型
+              </label>
+              <button @click="refreshAllModels" class="btn btn-secondary text-xs"><i class="fas fa-sync-alt mr-1"></i>刷新全部</button>
+            </div>
           </div>
           <div class="overflow-x-auto">
             <table class="w-full text-sm text-left">
@@ -356,19 +364,26 @@ func renderDashboardTemplate(providerDataJSON string) string {
                   <th class="px-4 py-3">模型</th>
                   <th class="px-4 py-3">提供商</th>
                   <th class="px-4 py-3">状态</th>
+                  <th class="px-4 py-3">启用</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="(model,idx) in activeModels" :key="idx" class="border-b hover:bg-gray-50">
+                <tr v-for="(model,idx) in visibleModels" :key="idx" class="border-b hover:bg-gray-50" :class="!model.enabled ? 'opacity-60' : ''">
                   <td class="px-4 py-3 text-gray-400">{{ idx + 1 }}</td>
                   <td class="px-4 py-3 font-medium">{{ model.name }}</td>
                   <td class="px-4 py-3 text-gray-500">{{ model.provider }}</td>
                   <td class="px-4 py-3">
-                    <span class="bg-green-100 text-green-800 text-xs px-2 py-0.5 rounded-full">可用</span>
+                    <span v-if="model.enabled" class="bg-green-100 text-green-800 text-xs px-2 py-0.5 rounded-full">可用</span>
+                    <span v-else class="bg-gray-100 text-gray-500 text-xs px-2 py-0.5 rounded-full">已隐藏</span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <button @click="toggleModel(model.type, model.name)" :title="model.enabled ? '点击隐藏' : '点击启用'" :class="model.enabled ? 'text-green-600' : 'text-gray-300'" class="text-xl leading-none">
+                      <i :class="model.enabled ? 'fas fa-toggle-on' : 'fas fa-toggle-off'"></i>
+                    </button>
                   </td>
                 </tr>
-                <tr v-if="!activeModels.length">
-                  <td colspan="4" class="px-4 py-8 text-center text-gray-400">添加 Provider 后，模型将显示在这里</td>
+                <tr v-if="!visibleModels.length">
+                  <td colspan="5" class="px-4 py-8 text-center text-gray-400">添加 Provider 后，模型将显示在这里</td>
                 </tr>
               </tbody>
             </table>
@@ -490,7 +505,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
                 <option value="">-- 选择模型 --</option>
                 <option value="auto">🚀 Auto（自动选择可用模型）</option>
                 <optgroup v-for="ptype in configuredProviderTypes" :label="ptype" :key="ptype">
-                  <option v-for="m in (providerModels[ptype] || [])" :value="m" :key="ptype+'-'+m">{{ m }}</option>
+                  <option v-for="m in enabledModelsFor(ptype)" :value="m" :key="ptype+'-'+m">{{ m }}</option>
                 </optgroup>
               </select>
             </div>
@@ -569,6 +584,12 @@ func renderDashboardTemplate(providerDataJSON string) string {
           selectedProvider: null,
           selectedProviderId: '',
           providerModels: {},
+          // modelEnabled: { "provider/model": bool } — user toggles; default on.
+          modelEnabled: {},
+          // When true, the Models table also shows hidden (disabled) models so
+          // they can be toggled back on. Hidden models never enter the test
+          // playground regardless of this flag.
+          showHidden: false,
           activeTab: 'overview',
           tabs: [
             { id: 'overview',  label: '概览',   icon: 'fas fa-chart-bar' },
@@ -590,6 +611,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
           customForm: { id: '', label: '', baseUrl: '', adapter: 'openai', priority: 50, modelsStr: '', key: '' },
           customLoading: false,
           customProviders: [],
+          pendingDeleteId: '',
           // Test (playground)
           pgModel: '',
           pgSystem: '',
@@ -635,16 +657,49 @@ func renderDashboardTemplate(providerDataJSON string) string {
         },
         activeModels() {
           const result = [];
-          const addedTypes = new Set((this.config.providers || []).map(p => p.type));
+          // Include custom providers too, so a freshly added custom provider's
+          // pulled models show immediately without waiting for re-login.
+          const addedTypes = new Set([
+            ...(this.config.providers || []).map(p => p.type),
+            ...(this.customProviders || []).map(cp => cp.id),
+          ]);
           for (const type of addedTypes) {
             const def = this.allProviders.find(p => p.id === type);
             const label = def?.label || type;
-            (this.providerModels[type] || []).forEach(m => result.push({ name: m, provider: label }));
+            (this.providerModels[type] || []).forEach(m => {
+              if (this.isModelEnabled(type, m)) result.push({ name: m, provider: label, type });
+            });
           }
           return result;
         },
+        // All fetched models regardless of enabled state, each tagged with its
+        // current enabled flag. Used by the Models table when showHidden is on.
+        allModels() {
+          const result = [];
+          const addedTypes = new Set([
+            ...(this.config.providers || []).map(p => p.type),
+            ...(this.customProviders || []).map(cp => cp.id),
+          ]);
+          for (const type of addedTypes) {
+            const def = this.allProviders.find(p => p.id === type);
+            const label = def?.label || type;
+            (this.providerModels[type] || []).forEach(m => {
+              result.push({ name: m, provider: label, type, enabled: this.isModelEnabled(type, m) });
+            });
+          }
+          return result;
+        },
+        // Models table rows. Hidden models are omitted unless showHidden is on.
+        visibleModels() {
+          return this.showHidden ? this.allModels : this.allModels.filter(m => m.enabled);
+        },
         configuredProviderTypes() {
-          return [...new Set((this.config.providers || []).map(p => p.type))];
+          // Include custom providers too, so the Models module reflects a freshly
+          // added custom provider without requiring a re-login (full config reload).
+          return [...new Set([
+            ...(this.config.providers || []).map(p => p.type),
+            ...(this.customProviders || []).map(cp => cp.id),
+          ])];
         },
         logProviderOptions() {
           const s = new Set([
@@ -733,6 +788,24 @@ func renderDashboardTemplate(providerDataJSON string) string {
         copyToClipboard(text) {
           if (!text) return;
           navigator.clipboard.writeText(text).then(() => this.showToast('已复制到剪贴板')).catch(() => this.showToast('复制失败', 'error'));
+        },
+        isModelEnabled(type, model) {
+          // Default on: absent key or explicit true means enabled.
+          const v = (this.config.modelEnabled || {})[type + '/' + model];
+          return v === undefined ? true : v;
+        },
+        enabledModelsFor(type) {
+          return (this.providerModels[type] || []).filter(m => this.isModelEnabled(type, m));
+        },
+        async toggleModel(type, model) {
+          if (!this.config.modelEnabled) this.config.modelEnabled = {};
+          const key = type + '/' + model;
+          this.config.modelEnabled[key] = !this.isModelEnabled(type, model);
+          try {
+            await this.saveConfig();
+            const st = this.config.modelEnabled[key] ? '已启用' : '已隐藏';
+            this.showToast(model + ' ' + st);
+          } catch(e) { this.showToast('保存失败', 'error'); }
         },
         // Config
         async fetchConfig() {
@@ -825,7 +898,11 @@ func renderDashboardTemplate(providerDataJSON string) string {
           } catch(e) { console.error('Fetch models error:', e); }
         },
         async refreshAllModels() {
-          for (const p of (this.config.providers || [])) await this.fetchModels(p.type, false);
+          const types = [
+            ...(this.config.providers || []).map(p => p.type),
+            ...(this.customProviders || []).map(cp => cp.id),
+          ];
+          for (const t of types) await this.fetchModels(t, false);
           this.showToast('模型列表已刷新');
         },
         // Custom providers
@@ -838,14 +915,21 @@ func renderDashboardTemplate(providerDataJSON string) string {
             }
           } catch(e) { console.error('Fetch custom providers error:', e); }
         },
-        toggleCustomForm() {
-          if (this.showCustomForm) {
-            // Closing the form: drop any pending edit state.
-            this.editingCustomId = '';
-            this.customKeyChanged = false;
-            this.customForm = { id:'', label:'', baseUrl:'', adapter:'openai', priority:50, modelsStr:'', key:'' };
-          }
-          this.showCustomForm = !this.showCustomForm;
+        openAddCustomForm() {
+          // Always enter a clean ADD state: clear any lingering edit state so the
+          // ID field is editable. Setting editingCustomId to null (not '') keeps the
+          // ID input enabled, because :disabled="editingCustomId" treats '' as a
+          // present (truthy) value in Vue 3 but null as absent (falsy).
+          this.editingCustomId = null;
+          this.customKeyChanged = false;
+          this.customForm = { id:'', label:'', baseUrl:'', adapter:'openai', priority:50, modelsStr:'', key:'' };
+          this.showCustomForm = true;
+        },
+        closeCustomForm() {
+          this.showCustomForm = false;
+          this.editingCustomId = null;
+          this.customKeyChanged = false;
+          this.customForm = { id:'', label:'', baseUrl:'', adapter:'openai', priority:50, modelsStr:'', key:'' };
         },
         editCustomProvider(cp) {
           this.editingCustomId = cp.id;
@@ -910,8 +994,17 @@ func renderDashboardTemplate(providerDataJSON string) string {
           } catch { this.showToast('网络错误', 'error'); }
           finally { cp._saving = false; }
         },
-        async removeCustomProvider(id) {
-          if (!confirm('确认删除自定义 Provider "' + id + '"？')) return;
+        removeCustomProvider(id) {
+          // Open an in-app confirmation (native confirm() is suppressed inside some webview previews).
+          this.pendingDeleteId = id;
+        },
+        cancelDelete() {
+          this.pendingDeleteId = '';
+        },
+        async confirmDelete() {
+          const id = this.pendingDeleteId;
+          this.pendingDeleteId = '';
+          if (!id) return;
           try {
             const res = await fetch('/api/providers/custom?id=' + encodeURIComponent(id), { method:'DELETE' });
             if (res.ok) { this.showToast('已删除'); await this.fetchCustomProviders(); }
@@ -947,29 +1040,49 @@ func renderDashboardTemplate(providerDataJSON string) string {
               if (!res.ok) { const txt = await res.text(); throw new Error(res.status+': '+(txt||'请求失败').substring(0,500)); }
               const reader = res.body.getReader();
               const decoder = new TextDecoder();
-              let buf = '', usage = null;
+              let buf = '', usage = null, finished = false;
+              // applyChunk parses one SSE/JSON line and folds its content into
+              // the response. Tolerant of:
+              //   - "data: {json}" AND "data:{json}" (some providers omit the space)
+              //   - raw JSON lines / Ollama NDJSON (no "data:" prefix)
+              //   - OpenAI streaming deltas OR a single non-streaming completion
+              //     object (a provider that ignores stream:true still renders).
+              const applyChunk = (raw) => {
+                let payload = raw;
+                if (/^data:/i.test(payload)) payload = payload.slice(5).replace(/^\s/, '');
+                else if (!/^[\[{]/.test(payload)) return; // comment / other SSE field
+                if (payload === '[DONE]') { finished = true; return; }
+                try {
+                  const chunk = JSON.parse(payload);
+                  const delta = chunk.choices?.[0]?.delta;
+                  if (delta) {
+                    if (delta.reasoning_content) this.pgReasoning += delta.reasoning_content;
+                    if (delta.content) this.pgOutput += delta.content;
+                  }
+                  const msg = chunk.choices?.[0]?.message;
+                  if (msg) {
+                    if (msg.reasoning_content) this.pgReasoning += msg.reasoning_content;
+                    if (msg.content) this.pgOutput += msg.content;
+                  }
+                  if (chunk.response) this.pgOutput += chunk.response; // Ollama NDJSON
+                  if (chunk.usage) usage = chunk.usage;
+                } catch {}
+              };
               while (true) {
                 const {done, value} = await reader.read();
                 if (done) break;
                 buf += decoder.decode(value, {stream:true});
-                const lines = buf.split('\\n');
+                const lines = buf.split('\n');
                 buf = lines.pop() || '';
                 for (const line of lines) {
-                  if (!line.startsWith('data: ')) continue;
-                  const data = line.slice(6).trim();
-                  if (data === '[DONE]') break;
-                  try {
-                    const chunk = JSON.parse(data);
-                    const delta = chunk.choices?.[0]?.delta;
-                    // Reasoning models (e.g. NVIDIA Nemotron) stream the thought
-                    // process in reasoning_content and the final answer in
-                    // content. Capture both so the playground never looks blank.
-                    if (delta?.reasoning_content) this.pgReasoning += delta.reasoning_content;
-                    if (delta?.content) this.pgOutput += delta.content;
-                    if (chunk.usage) usage = chunk.usage;
-                  } catch {}
+                  const t = line.trim();
+                  if (t) applyChunk(t);
+                  if (finished) break;
                 }
+                if (finished) break;
               }
+              // Flush any trailing bytes not terminated by a newline.
+              if (buf.trim()) applyChunk(buf.trim());
               this.pgStreamingActive = false;
               this.pgLatency = Date.now() - startTime;
               if (usage) this.pgStats = { promptTokens:usage.prompt_tokens||0, completionTokens:usage.completion_tokens||0, totalTokens:usage.total_tokens||0 };

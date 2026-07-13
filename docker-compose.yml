@@ -1,0 +1,39 @@
+# AI Gateway —— Docker Compose 部署（仅 App 容器）
+#
+# 快速开始：
+#   1. cp .env.example .env        # 按需修改宿主机端口 / 跨域来源
+#   2. docker compose up -d --build
+#   3. 浏览器打开 http://localhost:7000
+#
+# 首次运行：容器内会生成 data/gateway.db，管理员用户名为 admin，
+#          第一次用任意密码登录后即被哈希保存（与项目原逻辑一致）。
+#
+# 数据持久化：命名卷 gateway-data 挂载到 /app/data，容器重建/升级不丢数据。
+# 端口映射：宿主机 ${PORT:-7000} -> 容器 7000（容器内固定 7000）。
+
+services:
+  ai-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-gateway:latest
+    container_name: ai-gateway
+    restart: unless-stopped
+    ports:
+      - "${PORT:-7000}:7000"
+    environment:
+      PORT: "7000"
+      ALLOWED_ORIGIN: "${ALLOWED_ORIGIN:-}"
+    volumes:
+      - gateway-data:/app/data
+    healthcheck:
+      # 容器内 busybox wget 探测 /health；连接失败即视为不健康
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  gateway-data:
+    driver: local
