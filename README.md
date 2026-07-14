@@ -112,7 +112,7 @@ docker pull camel52zhang/ai-gateway:latest
 
 | Secret | 说明 |
 | --- | --- |
-| `DOCKERHUB_USERNAME` | 你的 Docker Hub 用户名（如 `camel52zhang`） |
+| `DOCKERHUB_USERNAME` | 你的 Docker Hub 用户名（如 `loveyou`） |
 | `DOCKERHUB_TOKEN` | Docker Hub 个人访问令牌（PAT，非登录密码） |
 
 ---
