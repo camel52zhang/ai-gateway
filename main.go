@@ -39,7 +39,9 @@ func main() {
 	// Static files (Vue, Font Awesome)
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 	mux.Handle("/webfonts/", http.StripPrefix("/webfonts/", http.FileServer(http.Dir("webfonts"))))
-	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
+	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "static/favicon.ico")
+	})
 
 	// Auth endpoints (no login required)
 	mux.HandleFunc("/auth/login", func(w http.ResponseWriter, r *http.Request) {
