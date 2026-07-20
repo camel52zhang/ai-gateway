@@ -174,6 +174,12 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 	cached := loadAllCachedModels()
 
 	for _, p := range cfg.Providers {
+		// A paused provider's models are fully taken out of service: they are not
+		// listed, not used by auto, and not callable (see HandleProxy). Resuming
+		// the provider restores exactly the model-enable states it had before.
+		if p.Paused {
+			continue
+		}
 		cachedModels, ok := cached[p.Type]
 		if ok && len(cachedModels) > 0 {
 			for _, m := range cachedModels {
@@ -220,7 +226,7 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 	// dropdown instead of specifying a concrete upstream model. The proxy's
 	// handleAutoProxy routes "auto" to the best available provider using
 	// priority ordering, fallback, rate-limit and circuit-breaker awareness.
-	if len(cfg.Providers) > 0 {
+	if hasActiveProvider(cfg) {
 		models = append([]map[string]string{{
 			"id":       "auto",
 			"object":   "model",
@@ -290,6 +296,16 @@ func HandleProxy(w http.ResponseWriter, r *http.Request) {
 	provider := providers.ResolveProvider(model, cfg.Providers, cfg.CustomProviders)
 	if provider == nil {
 		utils.JSON(w, 404, map[string]string{"error": "No matching provider found for model: " + model})
+		return
+	}
+
+	// A paused provider is fully out of service: any request targeting one of
+	// its models (explicit or via circuit-breaker fallback) is rejected with
+	// 404 so the model behaves exactly as if it were removed from the gateway.
+	if provider.Paused {
+		utils.JSON(w, 404, map[string]string{
+			"error": "Provider " + provider.Type + " is paused in the gateway and cannot be used.",
+		})
 		return
 	}
 
@@ -629,6 +645,11 @@ func handleAutoProxy(w http.ResponseWriter, r *http.Request, body map[string]int
 	seen := make(map[string]bool)
 
 	for _, p := range sorted {
+		// A paused provider (and all its models) is fully out of service for
+		// auto routing — it must never be picked as an auto candidate.
+		if p.Paused {
+			continue
+		}
 		// Skip providers without a key so we never build candidates that would
 		// fail with an empty Authorization header (e.g. when gw_models cache is
 		// stale relative to the config).
@@ -1021,4 +1042,19 @@ func isModelHidden(cfg *config.Config, provider, model string) bool {
 	}
 	v, ok := cfg.ModelEnabled[provider+"/"+model]
 	return ok && !v
+}
+
+// hasActiveProvider reports whether at least one configured provider is not
+// paused. Used to decide whether the virtual "auto" model should be advertised
+// in /v1/models — if everything is paused there is nothing for auto to route to.
+func hasActiveProvider(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, p := range cfg.Providers {
+		if !p.Paused {
+			return true
+		}
+	}
+	return false
 }

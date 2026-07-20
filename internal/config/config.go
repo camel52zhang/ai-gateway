@@ -18,8 +18,9 @@ type Provider struct {
 
 // User-configured provider (with api key)
 type UserProvider struct {
-	Type string `json:"type"`
-	Key  string `json:"key"`
+	Type   string `json:"type"`
+	Key    string `json:"key"`
+	Paused bool   `json:"paused"`
 }
 
 // Custom provider definition

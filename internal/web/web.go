@@ -297,12 +297,20 @@ func renderDashboardTemplate(providerDataJSON string) string {
             </div>
           </div>
           <div v-if="config.providers?.length" class="mt-4 space-y-2">
-            <div v-for="(item,index) in config.providers" class="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100">
+            <div v-for="(item,index) in config.providers" class="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100" :class="item.paused ? 'opacity-60 border-amber-200 bg-amber-50' : ''">
               <div>
-                <div class="font-medium text-sm capitalize">{{ item.type }}</div>
+                <div class="font-medium text-sm capitalize flex items-center gap-2">
+                  {{ item.type }}
+                  <span v-if="item.paused" class="text-xs text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">已暂停</span>
+                </div>
                 <div class="text-xs text-gray-400">****{{ item.key ? item.key.slice(-4) : '----' }}</div>
               </div>
-              <button @click="removeProvider(index)" class="btn-danger text-sm"><i class="fas fa-trash-alt"></i> 移除</button>
+              <div class="flex items-center gap-2">
+                <button @click="toggleProviderPause(item.type)" :class="item.paused ? 'btn btn-secondary text-sm' : 'btn text-sm text-amber-600 border border-amber-200 hover:bg-amber-50'" :title="item.paused ? '恢复使用' : '暂停使用'">
+                  <i :class="item.paused ? 'fas fa-play' : 'fas fa-pause'"></i> {{ item.paused ? '恢复' : '暂停' }}
+                </button>
+                <button @click="removeProvider(index)" class="btn-danger text-sm"><i class="fas fa-trash-alt"></i> 移除</button>
+              </div>
             </div>
           </div>
 
@@ -674,6 +682,8 @@ func renderDashboardTemplate(providerDataJSON string) string {
             ...(this.customProviders || []).map(cp => cp.id),
           ]);
           for (const type of addedTypes) {
+            // A paused provider offers no usable models until resumed.
+            if (this.isProviderPaused(type)) continue;
             const def = this.allProviders.find(p => p.id === type);
             const label = def?.label || type;
             (this.providerModels[type] || []).forEach(m => {
@@ -683,7 +693,10 @@ func renderDashboardTemplate(providerDataJSON string) string {
           return result;
         },
         // All fetched models regardless of enabled state, each tagged with its
-        // current enabled flag. Used by the Models table when showHidden is on.
+        // current enabled flag and whether its provider is paused. Used by the
+        // Models table when showHidden is on. Paused providers' models are
+        // filtered out of visibleModels so pausing a provider hides all its
+        // models; resuming restores exactly the prior enabled/hidden states.
         allModels() {
           const result = [];
           const addedTypes = new Set([
@@ -693,21 +706,26 @@ func renderDashboardTemplate(providerDataJSON string) string {
           for (const type of addedTypes) {
             const def = this.allProviders.find(p => p.id === type);
             const label = def?.label || type;
+            const paused = this.isProviderPaused(type);
             (this.providerModels[type] || []).forEach(m => {
-              result.push({ name: m, provider: label, type, enabled: this.isModelEnabled(type, m) });
+              result.push({ name: m, provider: label, type, enabled: this.isModelEnabled(type, m), paused });
             });
           }
           return result;
         },
-        // Models table rows. Hidden models are omitted unless showHidden is on.
+        // Models table rows. Hidden models are omitted unless showHidden is on;
+        // models of paused providers are always omitted (re-shown on resume).
         visibleModels() {
-          return this.showHidden ? this.allModels : this.allModels.filter(m => m.enabled);
+          const shown = this.showHidden ? this.allModels : this.allModels.filter(m => m.enabled);
+          return shown.filter(m => !m.paused);
         },
         configuredProviderTypes() {
           // Include custom providers too, so the Models module reflects a freshly
           // added custom provider without requiring a re-login (full config reload).
+          // Paused providers are excluded so they cannot be picked in the test
+          // dropdown until resumed.
           return [...new Set([
-            ...(this.config.providers || []).map(p => p.type),
+            ...(this.config.providers || []).filter(p => !p.paused).map(p => p.type),
             ...(this.customProviders || []).map(cp => cp.id),
           ])];
         },
@@ -876,7 +894,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
           const pkey = this.newProvider.key;
           const idx = this.config.providers.findIndex(x => x.type === ptype);
           if (idx >= 0) this.config.providers[idx].key = pkey;
-          else this.config.providers.push({ type: ptype, key: pkey });
+          else this.config.providers.push({ type: ptype, key: pkey, paused: false });
           this.newProvider.key = '';
           this.selectedProvider = null;
           this.selectedProviderId = '';
@@ -892,6 +910,19 @@ func renderDashboardTemplate(providerDataJSON string) string {
           this.config.providers.splice(index, 1);
           this.saveConfig();
           this.showToast('Provider 已移除');
+        },
+        isProviderPaused(type) {
+          const p = (this.config.providers || []).find(x => x.type === type);
+          return !!(p && p.paused);
+        },
+        async toggleProviderPause(type) {
+          const p = (this.config.providers || []).find(x => x.type === type);
+          if (!p) return;
+          p.paused = !p.paused;
+          try {
+            await this.saveConfig();
+            this.showToast(p.paused ? (type + ' 已暂停') : (type + ' 已恢复'));
+          } catch(e) { this.showToast('保存失败', 'error'); }
         },
         // Models
         async fetchModels(type, save = false) {

@@ -177,7 +177,7 @@ func ResolveProvider(model string, userProviders []config.UserProvider, customPr
 func GetFallbackProvider(model string, userProviders []config.UserProvider, excludeType string, customProviders []config.CustomProvider) *config.UserProvider {
 	var candidates []config.UserProvider
 	for _, up := range userProviders {
-		if up.Type != excludeType {
+		if up.Type != excludeType && !up.Paused {
 			candidates = append(candidates, up)
 		}
 	}
