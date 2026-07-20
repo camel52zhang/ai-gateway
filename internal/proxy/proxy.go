@@ -293,6 +293,20 @@ func HandleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hidden models are completely un-callable — even when a client explicitly
+	// names one. Normalize "provider/model" to the bare id (the cache stores
+	// bare ids) so the ModelEnabled key lookup matches the dashboard toggle.
+	bareModel := model
+	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 && parts[0] == provider.Type {
+		bareModel = parts[1]
+	}
+	if isModelHidden(cfg, provider.Type, bareModel) {
+		utils.JSON(w, 404, map[string]string{
+			"error": "Model " + model + " is hidden/disabled in the gateway and cannot be used.",
+		})
+		return
+	}
+
 	if cb.IsOpen(provider.Type) {
 		fallback := providers.GetFallbackProvider(model, cfg.Providers, provider.Type, cfg.CustomProviders)
 		if fallback == nil {
