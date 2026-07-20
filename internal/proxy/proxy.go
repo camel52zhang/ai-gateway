@@ -177,6 +177,9 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 		cachedModels, ok := cached[p.Type]
 		if ok && len(cachedModels) > 0 {
 			for _, m := range cachedModels {
+				if isModelHidden(cfg, p.Type, m) {
+					continue
+				}
 				models = append(models, map[string]string{
 					"id":       m,
 					"object":   "model",
@@ -194,6 +197,9 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 					cached[p.Type] = fetched
 					storage.SaveCachedModels(p.Type, fetched)
 					for _, m := range fetched {
+						if isModelHidden(cfg, p.Type, m) {
+							continue
+						}
 						models = append(models, map[string]string{
 							"id":       m,
 							"object":   "model",
@@ -631,6 +637,9 @@ func handleAutoProxy(w http.ResponseWriter, r *http.Request, body map[string]int
 			}
 		}
 		for _, m := range models {
+			if isModelHidden(cfg, p.Type, m) {
+				continue
+			}
 			// Dedup by provider+model, not model name alone: two providers
 			// exposing the same model name must each be tried independently so a
 			// healthy lower-priority key is not shadowed by a broken higher one.
@@ -981,4 +990,21 @@ func loadAllCachedModels() map[string][]string {
 		all = make(map[string][]string)
 	}
 	return all
+}
+
+// isModelHidden reports whether a model is explicitly disabled in the
+// user-facing model list. The ModelEnabled map defaults to enabled: an absent
+// key means enabled, only an explicit false hides the model. This is the same
+// semantics the dashboard toggle uses, so /v1/models and auto-routing stay
+// consistent with what the user sees in the UI.
+//
+// IMPORTANT: we must check presence (ok) — not just the value — because a Go
+// map lookup of an absent key returns the zero value false, which would
+// wrongly hide every default-enabled model.
+func isModelHidden(cfg *config.Config, provider, model string) bool {
+	if cfg == nil || cfg.ModelEnabled == nil {
+		return false
+	}
+	v, ok := cfg.ModelEnabled[provider+"/"+model]
+	return ok && !v
 }
