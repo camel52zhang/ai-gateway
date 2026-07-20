@@ -100,12 +100,15 @@ func HandleConfigPost(w http.ResponseWriter, r *http.Request) {
 		for i := range cfg.Providers {
 			if cfg.Providers[i].Type == cp.ID {
 				cfg.Providers[i].Key = cp.Key
+				// Keep the custom provider's pause toggle in sync: it is the
+				// authoritative source for a custom provider's paused state.
+				cfg.Providers[i].Paused = cp.Paused
 				found = true
 				break
 			}
 		}
 		if !found {
-			cfg.Providers = append(cfg.Providers, config.UserProvider{Type: cp.ID, Key: cp.Key})
+			cfg.Providers = append(cfg.Providers, config.UserProvider{Type: cp.ID, Key: cp.Key, Paused: cp.Paused})
 		}
 	}
 
@@ -286,6 +289,7 @@ func HandleCustomProvidersGet(w http.ResponseWriter, r *http.Request) {
 			"keyMask":    keyMask,
 			"adapter":    cp.Adapter,
 			"priority":   cp.Priority,
+			"paused":     cp.Paused,
 			"source":     "custom",
 		})
 	}
@@ -320,6 +324,10 @@ func HandleCustomProvidersPost(w http.ResponseWriter, r *http.Request) {
 		Priority  int      `json:"priority"`
 		Models    []string `json:"models"`
 		Key       *string  `json:"key"`
+		// Paused is optional and mirrors the per-provider pause toggle. A nil
+		// pointer means "don't change" so a key-only or field-only update never
+		// flips the pause state.
+		Paused *bool `json:"paused"`
 	}
 	if err := utils.ParseJSON(r, &body); err != nil {
 		utils.JSON(w, 400, map[string]string{"error": "Invalid JSON"})
@@ -401,6 +409,9 @@ func HandleCustomProvidersPost(w http.ResponseWriter, r *http.Request) {
 	if body.Models != nil {
 		merged.Models = body.Models
 	}
+	if body.Paused != nil {
+		merged.Paused = *body.Paused
+	}
 
 	// Key is optional and never echoed back to the client. A nil pointer means
 	// the field was absent from the request, so we keep the existing key. An
@@ -428,8 +439,9 @@ func HandleCustomProvidersPost(w http.ResponseWriter, r *http.Request) {
 	if merged.Key != "" {
 		if ui >= 0 {
 			cfg.Providers[ui].Key = merged.Key
+			cfg.Providers[ui].Paused = merged.Paused
 		} else {
-			cfg.Providers = append(cfg.Providers, config.UserProvider{Type: merged.ID, Key: merged.Key})
+			cfg.Providers = append(cfg.Providers, config.UserProvider{Type: merged.ID, Key: merged.Key, Paused: merged.Paused})
 		}
 	} else if ui >= 0 {
 		// Key cleared: drop the mirrored entry so stale keys don't linger.

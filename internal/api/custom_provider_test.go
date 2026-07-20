@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"ai-gateway/internal/config"
 	"ai-gateway/internal/storage"
 )
 
@@ -82,3 +83,73 @@ func TestCustomProviderAddMissingFields(t *testing.T) {
 		}
 	}
 }
+
+// TestCustomProviderPauseMirrorsToUserProvider verifies the per-provider pause
+// toggle on a custom provider is persisted (cp.Paused) AND mirrored into the
+// synced UserProvider entry in cfg.Providers, so the proxy's pause gates
+// (proxy.go) treat a paused custom provider exactly like a paused builtin one.
+func TestCustomProviderPauseMirrorsToUserProvider(t *testing.T) {
+	_, sid := setupModelEnabledTest(t)
+
+	// Create a custom provider already paused, with a key.
+	rec := postCustomProvider(t, sid, map[string]interface{}{
+		"id":      "pausable-cp",
+		"label":   "Pausable CP",
+		"baseUrl": "https://api.example.com/v1",
+		"adapter": "openai",
+		"key":     "sk-cp",
+		"paused":  true,
+	})
+	if rec.Code != 200 {
+		t.Fatalf("expected 200 adding paused custom provider, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	cfg, _ := storage.GetConfig()
+	var cp *config.CustomProvider
+	for i := range cfg.CustomProviders {
+		if cfg.CustomProviders[i].ID == "pausable-cp" {
+			cp = &cfg.CustomProviders[i]
+			break
+		}
+	}
+	if cp == nil {
+		t.Fatalf("custom provider not persisted")
+	}
+	if !cp.Paused {
+		t.Fatalf("expected cp.Paused == true, got false")
+	}
+
+	var up *config.UserProvider
+	for i := range cfg.Providers {
+		if cfg.Providers[i].Type == "pausable-cp" {
+			up = &cfg.Providers[i]
+			break
+		}
+	}
+	if up == nil {
+		t.Fatalf("mirrored UserProvider entry missing for custom provider")
+	}
+	if !up.Paused {
+		t.Fatalf("mirrored UserProvider.Paused must be true, got false (proxy pause gate would not engage)")
+	}
+
+	// Resume via an update (paused:false) and confirm the mirror flips too.
+	rec2 := postCustomProvider(t, sid, map[string]interface{}{
+		"id":     "pausable-cp",
+		"paused": false,
+	})
+	if rec2.Code != 200 {
+		t.Fatalf("expected 200 updating pause state, got %d body=%s", rec2.Code, rec2.Body.String())
+	}
+	cfg2, _ := storage.GetConfig()
+	flipped := true
+	for i := range cfg2.Providers {
+		if cfg2.Providers[i].Type == "pausable-cp" && cfg2.Providers[i].Paused {
+			flipped = false
+		}
+	}
+	if !flipped {
+		t.Fatalf("mirrored UserProvider.Paused should flip to false after resume")
+	}
+}
+

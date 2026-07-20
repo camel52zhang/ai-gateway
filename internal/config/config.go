@@ -39,6 +39,11 @@ type CustomProvider struct {
 	Priority   int      `json:"priority"`
 	Key        string   `json:"key"`
 	Source     string   `json:"source,omitempty"`
+	// Paused mirrors the per-provider pause toggle onto a custom provider.
+	// It is synced into the mirrored UserProvider entry in cfg.Providers so the
+	// proxy's pause gates (proxy.go) treat custom providers exactly like
+	// builtin ones.
+	Paused bool `json:"paused"`
 }
 
 // Gateway config stored in SQLite

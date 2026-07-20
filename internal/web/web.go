@@ -208,10 +208,12 @@ func renderDashboardTemplate(providerDataJSON string) string {
         <div class="card">
           <h3 class="font-semibold mb-4">Provider 健康状态</h3>
           <div class="space-y-2">
-            <div v-for="p in config.providers" :key="p.type" class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+            <div v-for="p in healthRows" :key="p.type" class="flex items-center justify-between p-3 bg-gray-50 rounded-lg" :class="p.paused ? 'opacity-60 border-amber-200 bg-amber-50' : ''">
               <div class="flex items-center gap-2">
                 <span :class="['health-dot', 'health-' + (healthStatus(p.type))]"></span>
-                <span class="font-medium capitalize text-sm">{{ p.type }}</span>
+                <span class="font-medium capitalize text-sm">{{ p.label }}</span>
+                <span v-if="p.custom" class="text-xs text-yellow-600 bg-yellow-100 px-1 rounded">自定义</span>
+                <span v-if="p.paused" class="text-xs text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded">已暂停</span>
               </div>
               <div class="flex items-center gap-4 text-xs text-gray-500">
                 <span v-if="latency(p.type) !== null"><i class="fas fa-clock mr-1"></i>{{ latency(p.type) }}ms</span>
@@ -223,7 +225,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
                 }">{{ healthLabel(p.type) }}</span>
               </div>
             </div>
-            <div v-if="!config.providers?.length" class="text-sm text-gray-400 p-4 text-center">暂无已配置 Provider</div>
+            <div v-if="!healthRows.length" class="text-sm text-gray-400 p-4 text-center">暂无已配置 Provider</div>
           </div>
         </div>
 
@@ -234,9 +236,9 @@ func renderDashboardTemplate(providerDataJSON string) string {
             <span class="text-xs text-gray-400">按 Provider 汇总</span>
           </div>
           <div class="space-y-2">
-            <div v-for="p in config.providers" :key="p.type + '-failure'" class="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
+            <div v-for="p in healthRows" :key="p.type + '-failure'" class="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
               <div>
-                <div class="font-medium capitalize text-sm">{{ p.type }}</div>
+                <div class="font-medium capitalize text-sm">{{ p.label }} <span v-if="p.custom" class="text-xs text-yellow-600 bg-yellow-100 px-1 rounded">自定义</span></div>
                 <div class="text-xs text-gray-500">{{ failureSummary(p.type).total }} 次失败</div>
               </div>
               <div class="flex flex-wrap gap-2 text-xs">
@@ -246,7 +248,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
                 <span v-if="!Object.keys(failureSummary(p.type).categories).length" class="text-gray-400">暂无失败</span>
               </div>
             </div>
-            <div v-if="!config.providers?.length" class="text-sm text-gray-400 p-4 text-center">暂无已配置 Provider</div>
+            <div v-if="!healthRows.length" class="text-sm text-gray-400 p-4 text-center">暂无已配置 Provider</div>
           </div>
         </div>
       </div>
@@ -339,7 +341,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
           <div v-if="customProviders.length" class="space-y-2">
             <div v-for="cp in customProviders" class="flex items-center justify-between p-3 bg-yellow-50 rounded-lg border border-yellow-100">
               <div class="flex-1">
-                <div class="font-medium text-sm">{{ cp.label }} <span class="text-xs text-yellow-600 bg-yellow-100 px-1 rounded">自定义</span></div>
+                <div class="font-medium text-sm">{{ cp.label }} <span class="text-xs text-yellow-600 bg-yellow-100 px-1 rounded">自定义</span><span v-if="cp.paused" class="text-xs text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded ml-1">已暂停</span></div>
                 <div class="text-xs text-gray-400">{{ cp.id }} · {{ cp.baseUrl }}</div>
                 <div v-if="cp.keyMask" class="text-xs text-green-600 mt-0.5"><i class="fas fa-key"></i> 已配置密钥 {{ cp.keyMask }}</div>
                 <div class="mt-2 flex gap-2">
@@ -348,6 +350,9 @@ func renderDashboardTemplate(providerDataJSON string) string {
                     <span v-if="!cp._saving">更新密钥</span><span v-else><i class="fas fa-circle-notch fa-spin"></i></span>
                   </button>
                   <button @click="editCustomProvider(cp)" class="btn btn-secondary text-xs whitespace-nowrap"><i class="fas fa-edit"></i> 编辑</button>
+                  <button @click="toggleCustomProviderPause(cp)" :class="cp.paused ? 'btn btn-secondary text-xs whitespace-nowrap' : 'btn text-xs whitespace-nowrap text-amber-600 border border-amber-200 hover:bg-amber-50'" :title="cp.paused ? '恢复使用' : '暂停使用'">
+                    <i :class="cp.paused ? 'fas fa-play' : 'fas fa-pause'"></i> {{ cp.paused ? '恢复' : '暂停' }}
+                  </button>
                 </div>
               </div>
               <button v-if="pendingDeleteId !== cp.id" @click="removeCustomProvider(cp.id)" class="btn-danger text-xs ml-3" title="删除"><i class="fas fa-trash-alt"></i></button>
@@ -673,6 +678,23 @@ func renderDashboardTemplate(providerDataJSON string) string {
           }
           return list;
         },
+        // Unified provider list for the health/failure overviews: builtin
+        // providers come from config.providers, custom providers from the
+        // dedicated customProviders list (so they show their human label and a
+        // "自定义" tag). Custom providers are de-duped out of config.providers
+        // because they're already mirrored there as a UserProvider for routing.
+        healthRows() {
+          const customIds = new Set((this.customProviders || []).map(c => c.id));
+          const rows = [];
+          for (const p of (this.config.providers || [])) {
+            if (customIds.has(p.type)) continue;
+            rows.push({ type: p.type, label: p.type, paused: !!p.paused, custom: false });
+          }
+          for (const cp of (this.customProviders || [])) {
+            rows.push({ type: cp.id, label: cp.label || cp.id, paused: !!cp.paused, custom: true });
+          }
+          return rows;
+        },
         activeModels() {
           const result = [];
           // Include custom providers too, so a freshly added custom provider's
@@ -913,7 +935,9 @@ func renderDashboardTemplate(providerDataJSON string) string {
         },
         isProviderPaused(type) {
           const p = (this.config.providers || []).find(x => x.type === type);
-          return !!(p && p.paused);
+          if (p) return !!p.paused;
+          const cp = (this.customProviders || []).find(x => x.id === type);
+          return !!(cp && cp.paused);
         },
         async toggleProviderPause(type) {
           const p = (this.config.providers || []).find(x => x.type === type);
@@ -923,6 +947,28 @@ func renderDashboardTemplate(providerDataJSON string) string {
             await this.saveConfig();
             this.showToast(p.paused ? (type + ' 已暂停') : (type + ' 已恢复'));
           } catch(e) { this.showToast('保存失败', 'error'); }
+        },
+        // Custom provider pause toggle. Persists via the custom-provider
+        // upsert endpoint (paused is an optional, mergeable field there), which
+        // also mirrors the state into the synced UserProvider so the proxy
+        // pause gates (proxy.go) treat custom providers like builtin ones.
+        async toggleCustomProviderPause(cp) {
+          if (!cp) return;
+          const newPaused = !cp.paused;
+          try {
+            const res = await fetch('/api/providers/custom', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: cp.id, paused: newPaused }),
+            });
+            if (res.ok) {
+              cp.paused = newPaused;
+              this.showToast(cp.id + (newPaused ? ' 已暂停' : ' 已恢复'));
+            } else {
+              const d = await res.json().catch(() => ({}));
+              this.showToast(d.error || '操作失败', 'error');
+            }
+          } catch(e) { this.showToast('操作失败', 'error'); }
         },
         // Models
         async fetchModels(type, save = false) {
