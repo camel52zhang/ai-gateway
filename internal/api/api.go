@@ -133,9 +133,12 @@ func HandleConfigPost(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("[models] fetch %s failed: %v", p.Type, err)
 		}
-		if len(fetched) > 0 {
-			models[p.Type] = fetched
-			storage.SaveCachedModels(p.Type, fetched)
+		// Merge in manually-entered models ("模型列表（逗号分隔）") so they
+		// persist in cfg.Models and survive reloads/login refreshes.
+		merged := mergeUnique(fetched, manualModelsFor(cfg, p.Type))
+		if len(merged) > 0 {
+			models[p.Type] = merged
+			storage.SaveCachedModels(p.Type, merged)
 		}
 	}
 
@@ -484,6 +487,45 @@ func HandleCustomProvidersDelete(w http.ResponseWriter, r *http.Request) {
 	utils.JSON(w, 200, map[string]bool{"success": true})
 }
 
+// manualModelsFor returns the manually-entered model list for a custom provider
+// with the given type ID (from the "模型列表（逗号分隔）" field). It returns nil
+// if the provider is not a custom provider or has no manual models.
+func manualModelsFor(cfg *config.Config, providerType string) []string {
+	for _, cp := range cfg.CustomProviders {
+		if cp.ID == providerType && len(cp.Models) > 0 {
+			return cp.Models
+		}
+	}
+	return nil
+}
+
+// mergeUnique appends elements of add that are not already present in base,
+// preserving base order first, then any new entries from add (deduped). Returns
+// base unchanged when add is empty, or add when base is empty.
+func mergeUnique(base, add []string) []string {
+	if len(add) == 0 {
+		return base
+	}
+	if len(base) == 0 {
+		return add
+	}
+	seen := make(map[string]bool, len(base)+len(add))
+	out := make([]string, 0, len(base)+len(add))
+	for _, m := range base {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	for _, m := range add {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func HandleModels(w http.ResponseWriter, r *http.Request) {
 	if !storage.IsAuthenticated(r) {
 		utils.JSON(w, 401, map[string]string{"error": "Authentication required"})
@@ -520,14 +562,26 @@ func HandleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	models, err := adapters.FetchProviderModels(def, provider.Key)
+	fetched, err := adapters.FetchProviderModels(def, provider.Key)
 	if err != nil {
 		log.Printf("[models] fetch %s failed: %v", pType, err)
-		utils.JSON(w, 200, map[string]interface{}{
-			"models": models,
+	}
+	// Manually-entered models (the "模型列表（逗号分隔）" field) must always
+	// appear — even when the upstream /models endpoint is unavailable, or omits
+	// models the user explicitly wants (e.g. a free model not returned by the
+	// listing API). Merge them in so the dashboard and downstream /v1/models
+	// reflect the user's explicit list.
+	models := mergeUnique(fetched, manualModelsFor(cfg, pType))
+
+	if len(models) == 0 {
+		resp := map[string]interface{}{
+			"models": []string{},
 			"type":   pType,
-			"error":  "拉取上游模型失败：" + err.Error(),
-		})
+		}
+		if err != nil {
+			resp["error"] = "拉取上游模型失败：" + err.Error()
+		}
+		utils.JSON(w, 200, resp)
 		return
 	}
 	if len(models) > 0 {

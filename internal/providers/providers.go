@@ -102,6 +102,12 @@ func GetMerged(customProviders []config.CustomProvider) map[string]config.Provid
 			Website: cp.Website, Docs: cp.Docs, APIKeyURL: cp.APIKeyURL,
 			BaseURL: cp.BaseURL, Compatible: cp.Compatible, Icon: cp.Icon,
 			Adapter: cp.Adapter, Priority: cp.Priority,
+			// Carry the manually-entered model list ("模型列表（逗号分隔）").
+			// This lets ResolveProvider match a bare model name (e.g.
+			// glm-4.7-flash) to this custom provider, and lets
+			// FetchProviderModels fall back to the manual list when the
+			// upstream /models endpoint is unavailable or omits free models.
+			Models: cp.Models,
 		}
 	}
 	return merged
