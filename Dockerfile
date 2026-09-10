@@ -23,10 +23,12 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/ai-gateway .
 FROM alpine:3.20
 WORKDIR /app
 
-# 网关需对外访问 AI 厂商的 HTTPS 接口，必须携带 CA 证书；tzdata 用于日志时间戳
-RUN apk add --no-cache ca-certificates tzdata
+# 网关需对外访问 AI 厂商的 HTTPS 接口，必须携带 CA 证书；tzdata 用于日志时间戳；
+# su-exec 用于启动期以 root 修正数据目录属主后降权到 app 用户
+RUN apk add --no-cache ca-certificates tzdata su-exec
 
-# 以非 root 用户运行，降低容器内提权风险
+# 创建非 root 的 app 用户，数据目录初始属主为 app（运行时若 bind 挂载了宿主机
+# root 属主的目录，入口脚本会再修正一次）
 RUN addgroup -S app \
     && adduser -S app -G app \
     && mkdir -p /app/data \
@@ -36,8 +38,8 @@ RUN addgroup -S app \
 COPY --from=build /out/ai-gateway /app/ai-gateway
 COPY static   /app/static
 COPY webfonts /app/webfonts
-
-USER app
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 7000
 
@@ -51,4 +53,4 @@ ENV PORT=7000 \
     ALL_PROXY= \
     all_proxy=
 
-ENTRYPOINT ["/app/ai-gateway"]
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
