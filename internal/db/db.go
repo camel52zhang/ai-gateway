@@ -15,6 +15,14 @@ import (
 
 var db *sql.DB
 
+// useWALCheckpoint is set by InitStorage: true only when WAL mode is both
+// requested and verified to actually work in this environment. Some
+// container/filesystem setups cannot mmap the WAL -shm file (error
+// "out of memory"), which leaves the whole database unwritable. When false, the
+// periodic checkpoint loop is skipped because rollback-journal mode needs no
+// checkpoint.
+var useWALCheckpoint bool
+
 type Env struct {
 	DB             *sql.DB
 	ALLOWED_ORIGIN string
@@ -59,42 +67,59 @@ func InitStorage() *Env {
 	}
 
 	var err error
-	db, err = sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=wal_autocheckpoint(100)&_pragma=busy_timeout(5000)")
+	// Open WITHOUT forcing WAL in the DSN. WAL needs a memory-mapped -shm file,
+	// and some container/filesystem setups fail that mmap with "out of memory",
+	// which leaves the whole database unwritable. We open in the safe default
+	// (rollback journal, mmap disabled) and only opt into WAL after a successful
+	// runtime probe (see probeWAL).
+	dsn := dbPath + "?_pragma=foreign_keys(ON)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=mmap_size(0)"
+	db, err = sql.Open("sqlite", dsn)
 	if err != nil {
 		log.Fatalf("[db] Failed to open: %v", err)
 	}
-	// Give the pool a single writer connection so concurrent config writes
-	// serialize through SQLite instead of contending. Read-heavy paths use the
-	// in-memory config cache, so a small pool does not bottleneck traffic.
+	// Single writer connection: concurrent config writes serialize through
+	// SQLite instead of contending. Read-heavy paths use the in-memory config
+	// cache, so a small pool does not bottleneck traffic.
 	db.SetMaxOpenConns(1)
 
-	// Lower autocheckpoint threshold (100 pages ≈ 400KB) so SQLite folds WAL
-	// frames back into the main db passively, in addition to the explicit
-	// TRUNCATE checkpoint launched below. The default of 1000 pages lets
-	// gateway.db-wal grow unboundedly on a long-running server because the
-	// per-request append to the request log never triggers a checkpoint.
-
-	db.Exec(`CREATE TABLE IF NOT EXISTS kv (
+	// Create schema and fail loudly if the DB file is not writable. A silent
+	// "Initialized" with a dead database is far worse than a visible crash that
+	// points at volume permissions / disk space.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS kv (
 		key      TEXT PRIMARY KEY,
 		value    TEXT NOT NULL,
 		expires_at INTEGER
-	)`)
+	)`); err != nil {
+		// A stale -wal/-shm left by a crashed WAL-mode run can block a clean
+		// open on the constrained host. As a last resort, drop them and reopen
+		// (loses only uncheckpointed WAL frames, which is acceptable after a
+		// failure of this kind). This keeps redeploys from looping on a crash.
+		log.Printf("[db] schema init failed (%v); attempting recovery by clearing stale WAL files", err)
+		db.Close()
+		os.Remove(dbPath + "-wal")
+		os.Remove(dbPath + "-shm")
+		db, err = sql.Open("sqlite", dsn)
+		if err != nil {
+			log.Fatalf("[db] Failed to reopen after WAL cleanup: %v", err)
+		}
+		db.SetMaxOpenConns(1)
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS kv (
+			key      TEXT PRIMARY KEY,
+			value    TEXT NOT NULL,
+			expires_at INTEGER
+		)`); err != nil {
+			log.Fatalf("[db] cannot initialise schema at %s (check volume permissions / disk space): %v", dbPath, err)
+		}
+	}
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_kv_expires ON kv(expires_at)`)
 
-	// Periodic WAL checkpoint (TRUNCATE) keeps gateway.db-wal small. Without
-	// this, every write transaction — including the per-request append to the
-	// request log — accumulates in the WAL file and is only folded back on the
-	// default 1000-page autocheckpoint, so the file grows without bound while
-	// the server runs. TRUNCATE copies WAL frames into the main db and resets
-	// the WAL file to empty; it is safe under concurrent readers/writers and
-	// simply no-ops until the next tick if the lock is busy.
-	startWALCheckpoint(db, walCheckpointInterval())
-
-	// Immediate checkpoint on startup so any pre-existing WAL (e.g. left over
-	// from a previous long-running session) is folded back and truncated now
-	// instead of waiting up to one interval for the first tick.
-	if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
-		log.Printf("[db] initial wal_checkpoint failed: %v", err)
+	// WAL is nice-to-have, not mandatory. Probe it: if enabling WAL and running
+	// a real write+checkpoint works, keep the periodic checkpoint loop. If the
+	// -shm mmap fails (common on constrained containers), transparently fall
+	// back to rollback-journal mode so the gateway stays fully functional.
+	useWALCheckpoint = probeWAL(db)
+	if useWALCheckpoint {
+		startWALCheckpoint(db, walCheckpointInterval())
 	}
 
 	// Clean expired
@@ -105,6 +130,30 @@ func InitStorage() *Env {
 		DB:             db,
 		ALLOWED_ORIGIN: os.Getenv("ALLOWED_ORIGIN"),
 	}
+}
+
+// probeWAL tries to enable WAL and verifies it actually works by writing a probe
+// row and truncating the WAL. Returns true only if both succeed; on any failure
+// it switches back to rollback-journal mode and returns false. This keeps the
+// gateway functional on hosts where the WAL -shm file cannot be mmapped.
+func probeWAL(db *sql.DB) bool {
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+		log.Printf("[db] WAL unavailable (%v); using rollback journal", err)
+		return false
+	}
+	if _, err := db.Exec(`INSERT OR REPLACE INTO kv(key,value) VALUES('__db_probe__','1')`); err != nil {
+		log.Printf("[db] WAL write probe failed (%v); using rollback journal", err)
+		db.Exec(`PRAGMA journal_mode=DELETE`)
+		return false
+	}
+	defer db.Exec(`DELETE FROM kv WHERE key='__db_probe__'`)
+	if _, err := db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		log.Printf("[db] WAL checkpoint probe failed (%v); using rollback journal", err)
+		db.Exec(`PRAGMA journal_mode=DELETE`)
+		return false
+	}
+	log.Printf("[db] journal mode: WAL (checkpoint loop enabled)")
+	return true
 }
 
 // --- KV Adapter ---

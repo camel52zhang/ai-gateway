@@ -853,7 +853,13 @@ func handleAutoProxy(w http.ResponseWriter, r *http.Request, body map[string]int
 func HandleHealth(w http.ResponseWriter, r *http.Request) {
 	cfg, err := storage.GetConfig()
 	if err != nil {
-		utils.JSON(w, 500, map[string]string{"error": "Config error"})
+		// Liveness over readiness: a transient DB read error must not flip the
+		// container to "unhealthy". Report it but keep the endpoint alive.
+		utils.JSON(w, 200, map[string]interface{}{
+			"status":    "db_error",
+			"dbError":   true,
+			"timestamp": utils.NowISO(),
+		})
 		return
 	}
 
