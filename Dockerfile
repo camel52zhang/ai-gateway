@@ -49,7 +49,7 @@ RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoin
 
 EXPOSE 7000
 
-# 清掉可能干扰上游直连的代理变量（与 start.sh 行为一致：纯直连模式）
+# 清掉可能干扰上游直连的代理变量（纯直连模式）
 ENV PORT=7000 \
     ALLOWED_ORIGIN= \
     HTTP_PROXY= \

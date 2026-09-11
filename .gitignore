@@ -9,7 +9,10 @@ ai-gateway-linux-amd64
 .workbuddy/
 
 # --- Runtime data (SQLite WAL + shm + backups) ---
+# /data/          : 容器内路径，若改用 bind mount 备查
+# /gateway-data/  : docker-compose 注释里给出的 bind mount 替代目录
 /data/
+/gateway-data/
 
 # --- Logs ---
 *.log

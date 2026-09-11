@@ -59,17 +59,34 @@ mode that actually happens is "locked out of my own service", not impersonation.
 5. 日志 (Logs)
 6. 设置 (Settings)
 
-## Build & Run
-```powershell
-cd D:\tools\qlcaw\api-gateway
-go build -o ai-gateway.exe .
-Start-Process -FilePath ".\ai-gateway.exe" -WindowStyle Minimized
-# Visit http://localhost:7000/login
+## Build & Run — Docker Compose only
+Local and VPS run the exact same way. There is deliberately **no** "run the
+binary directly" path in the repo anymore: `start.sh`, `start.bat` and the
+systemd unit `ai-gateway.service` were removed, and the `ai-gateway-linux-amd64`
+build artifact is no longer tracked.
+
+```bash
+cp .env.example .env        # optional: host port / CORS origin / ADMIN_PASSWORD
+docker compose up -d --build
+# dashboard http://localhost:7000  ·  login: admin + $ADMIN_PASSWORD
 ```
 
-## Key Files Modified
-- `main.go` - port 7000 default, static/webfonts routes, removed SIMPLE_MODE
-- `internal/web/web.go` - vanilla JS login, local assets, no SIMPLE_MODE pages
-- `internal/db/db.go` - removed SIMPLE_MODE from Env struct
-- `internal/auth/auth.go` - removed SIMPLE_MODE login shortcut
-- `internal/storage/storage.go` - removed SIMPLE_MODE auth bypass
+- Data lives in the named volume `gateway-data` → container `/app/data`.
+  The compose file also documents the bind-mount alternative.
+- Repo directory: `D:\tools\WorkBuddy\ai-gateway_v5`
+- VPS: same compose file, fronted by nginx (`nginx-ai-gateway.conf`,
+  remember `TRUST_PROXY=1` so login rate limiting sees the real client IP).
+
+## Testing
+- Unit tests still run on the host (and in CI): `CGO_ENABLED=0 go test ./...`
+- Container smoke: `bash smoke-test.sh http://localhost:7000` — see `TESTING.md`.
+
+## Build / deploy notes
+- `Dockerfile` — multi-stage (`golang:1.26-alpine` → `alpine:3.20`), CGO off.
+  It intentionally has **no** `# syntax=docker/dockerfile:1` directive: that
+  forces a dockerfile-frontend pull which hangs behind a flaky proxy.
+- `docker-entrypoint.sh` — starts as root only long enough to `chown /app/data`,
+  then drops to the non-root `app` user via `su-exec`.
+- `.gitattributes` pins `*.sh` to LF. CRLF in the entrypoint shebang makes the
+  container fail to start at all (Alpine looks for `#!/bin/sh\r`).
+- `.dockerignore` keeps the build context to source + `static/` + `webfonts/`.

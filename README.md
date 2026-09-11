@@ -84,18 +84,17 @@ docker compose up -d --build
 
 ---
 
-## 从源码构建
+## 本地构建镜像
+
+本项目**只支持用 Docker Compose 运行**，本地与 VPS 完全一致；仓库不再提供直接运行二进制的脚本。
 
 ```bash
-# 本地直接运行
-go build -o ai-gateway .
-./ai-gateway                 # 默认监听 :7000
-
-# 或构建 Docker 镜像
-docker build -t ai-gateway:latest .
+docker compose up -d --build          # 本地从源码构建并启动
+docker build -t ai-gateway:latest .   # 或只构建镜像
 ```
 
-> 本项目使用纯 Go 版 SQLite，构建时无需 gcc；本地 `go build` 与 Docker 构建均使用 `CGO_ENABLED=0`。
+> 使用纯 Go 版 SQLite（modernc.org/sqlite），构建时无需 gcc —— `CGO_ENABLED=0` 已在 `Dockerfile` 中设定。
+> 单元测试仍可在宿主机运行（CI 也是这么跑的）：`CGO_ENABLED=0 go test ./...`，详见 `TESTING.md`。
 
 ---
 
@@ -131,10 +130,14 @@ docker pull camel52zhang/ai-gateway:latest
 ```
 .
 ├── Dockerfile              # 多阶段构建（golang:1.26-alpine → alpine:3.20）
-├── docker-compose.yml      # 部署示例（App 容器 + 数据卷 + 健康检查）
+├── docker-compose.yml      # 部署配置（App 容器 + 命名卷 + 健康检查）
+├── docker-entrypoint.sh    # 修正数据目录属主后降权到 app 用户
 ├── .env.example            # 环境变量样例
 ├── main.go                 # 路由与启动入口（端口 7000）
 ├── internal/               # Go 业务代码（api / auth / proxy / web / db ...）
-├── static/                 # 本地托管的 Vue / Tailwind / Font Awesome
-└── webfonts/               # 字体文件
+├── static/                 # 本地托管的 Vue / Tailwind / Font Awesome / favicon
+├── webfonts/               # 字体文件
+├── nginx-ai-gateway.conf   # VPS 上的 nginx 反代配置（宿主机侧使用）
+├── smoke-test.sh           # 对已启动实例做冒烟测试
+└── TESTING.md              # 测试指南（单元测试 + 容器冒烟）
 ```

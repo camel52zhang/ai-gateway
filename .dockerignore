@@ -2,28 +2,27 @@
 # Docker 构建上下文排除清单
 # 目标：只把「编译 + 运行」真正需要的东西送进 daemon，
 #       缩小上下文、加快构建、避免把文档/密钥/产物烧进镜像。
+# 实际需要进入镜像的只有：Go 源码 + static/ + webfonts/
+#                        + docker-entrypoint.sh
 # ============================================================
 
 # --- 版本控制与本地元数据 ---
 .git
 .gitignore
+.gitattributes
 .github
 .workbuddy
 
-# --- 运行时数据：SQLite 库及 WAL/SHM（容器内由卷提供，不入镜像）---
+# --- 运行时数据：SQLite 库及 WAL/SHM（容器内由命名卷 gateway-data 提供）---
 data
 *.db
 *.db-shm
 *.db-wal
-test_local.db
-test_local.db-shm
-test_local.db-wal
 
 # --- 已编译的二进制（让 Docker 从源码重建，保证镜像可复现）---
 *.exe
 *.exe~
 ai-gateway
-ai-gateway.exe
 ai-gateway-linux-amd64
 
 # --- 文档 / 排查记录（与运行无关）---
@@ -33,12 +32,8 @@ ai-gateway-linux-amd64
 
 # --- 部署辅助文件（宿主机侧使用，镜像内不需要）---
 # 注意：不要排除 Dockerfile 与 docker-entrypoint.sh，二者是构建所必需的。
-icon
 nginx-*.conf
 smoke-test.sh
-start.bat
-start.sh
-*.service
 docker-compose.yml
 
 # --- 环境变量与密钥（绝不进构建上下文）---
