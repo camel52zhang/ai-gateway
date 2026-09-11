@@ -34,9 +34,13 @@ docker compose up -d --build
 
 ## 首次登录与获取统一 Key
 
-1. 访问 `http://localhost:7000` → 跳转到 `/login`
-2. 用户名 `admin`，**首次用任意密码登录**后即被哈希保存（之后需用该密码）
+1. 在 `.env` 里设置 `ADMIN_PASSWORD=你的密码`；若已错过这一步，用 `docker compose run --rm ai-gateway --reset-password` 生成一个随机密码（会打印在终端）
+2. 访问 `http://localhost:7000` → 跳转到 `/login`，用户名 `admin` + 上面设置的密码
 3. 进入「设置」页复制 **统一 Key（Unified Key）** —— 下游客户端用它做鉴权
+4. 顺手在「设置」页点一次 **生成恢复码**，把 10 个一次性恢复码存进密码管理器
+
+> 为安全起见，**未配置密码的实例会拒绝登录**（不再是"任意密码即可进入"）。忘记密码时有三条本地恢复路径：
+> `--reset-password`、`RESET_PASSWORD=1` + `ADMIN_PASSWORD`，或在登录页点「忘记密码？用恢复码」自助重置 —— 都不依赖短信或邮箱。
 
 ---
 
@@ -46,6 +50,9 @@ docker compose up -d --build
 | --- | --- | --- |
 | `PORT` | `7000` | 监听端口（**容器内固定 7000**，宿主机映射用 compose 的 `${PORT:-7000}`） |
 | `ALLOWED_ORIGIN` | 空（允许任意来源） | CORS 允许来源；生产建议设为你的前端域名，例如 `https://gw.example.com` |
+| `ADMIN_PASSWORD` | 空 | 首次启动时用它初始化 `admin` 账号（**建议设置**）。未设置且库中无密码时，登录会被拒绝 |
+| `RESET_PASSWORD` | `0` | 置 `1` 时本次启动会重置密码（用 `ADMIN_PASSWORD`；未设置则生成随机密码并打印到日志）。**用完请立即移除** |
+| `TRUST_PROXY` | `0` | 部署在 nginx 等反向代理后面时置 `1`，登录限流才按真实客户端 IP 计数（否则所有请求都来自代理 IP，等于全局限流） |
 
 数据持久化：命名卷 `gateway-data` 挂载到容器 `/app/data`（SQLite 数据库）。
 
@@ -67,6 +74,8 @@ docker compose up -d --build
 | --- | --- |
 | `GET /health` | 健康检查 |
 | `POST /auth/login` · `/auth/logout` | 登录 / 注销 |
+| `POST /auth/recovery` | 用一次性恢复码重置密码（无需登录） |
+| `POST /api/recovery/generate` | 生成 10 个一次性恢复码，明文仅返回一次（需登录） |
 | `GET/POST /api/config` | 配置读写（含统一 Key） |
 | `GET/POST/DELETE /api/providers/custom` | 自定义 Provider 增删查 |
 | `GET /api/models?type=<id>` | 某 Provider 的模型列表 |

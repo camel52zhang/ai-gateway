@@ -42,6 +42,9 @@ func HandleConfigGet(w http.ResponseWriter, r *http.Request) {
 		"stats":           storage.GetStats(),
 		"models":          cfg.Models,
 		"modelEnabled":    cfg.ModelEnabled,
+		// Expose only how many one-time codes remain; the digests themselves
+		// never leave the server.
+		"recoveryCodesRemaining": len(cfg.RecoveryCodes),
 		"requestLog":      truncateLog(storage.GetRequestLog(), 50),
 		"errorLog":        truncateLogErrors(storage.GetErrorLog(), 50),
 		"providerLatency": storage.GetProviderLatency(),
@@ -206,6 +209,51 @@ func HandleKeyRegenerate(w http.ResponseWriter, r *http.Request) {
 	utils.JSON(w, 200, map[string]interface{}{
 		"success":    true,
 		"unifiedKey": cfg.UnifiedKey,
+	})
+}
+
+// HandleRecoveryGenerate issues a fresh set of one-time recovery codes. The
+// plaintext codes are returned exactly once and only their digests are stored,
+// so a user who loses the list must generate a new set — there is deliberately
+// no way to read the old codes back out of the database.
+func HandleRecoveryGenerate(w http.ResponseWriter, r *http.Request) {
+	if !storage.IsAuthenticated(r) {
+		utils.JSON(w, 401, map[string]string{"error": "Authentication required"})
+		return
+	}
+
+	cfg, err := storage.GetConfig()
+	if err != nil {
+		utils.JSON(w, 500, map[string]string{"error": "Config error"})
+		return
+	}
+
+	const codeCount = 10
+	codes := make([]string, 0, codeCount)
+	digests := make([]string, 0, codeCount)
+	for i := 0; i < codeCount; i++ {
+		code := utils.GenerateRecoveryCode()
+		if code == "" {
+			utils.JSON(w, 500, map[string]string{"error": "Failed to generate codes"})
+			return
+		}
+		codes = append(codes, code)
+		digests = append(digests, utils.HashRecoveryCode(code))
+	}
+
+	// Replacing the whole set invalidates any previously issued codes, which is
+	// what "generate new codes" should mean.
+	cfg.RecoveryCodes = digests
+	if err := storage.SaveConfig(cfg); err != nil {
+		utils.JSON(w, 500, map[string]string{"error": "Failed to save recovery codes"})
+		return
+	}
+	log.Printf("[auth] issued %d new recovery codes", len(codes))
+
+	utils.JSON(w, 200, map[string]interface{}{
+		"codes":   codes,
+		"count":   len(codes),
+		"message": "恢复码只显示这一次，请立即保存到密码管理器或离线保存。每个码只能使用一次。",
 	})
 }
 

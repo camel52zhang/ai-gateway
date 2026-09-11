@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -23,8 +24,26 @@ import (
 )
 
 func main() {
+	// Password recovery entry points (see resetAdminPassword). Resolved before
+	// anything else so a reset still works on a brand-new or damaged database.
+	resetRequested, resetViaFlag := parseResetRequest()
+
 	env := db.InitStorage()
 	storage.Init(env)
+
+	if resetRequested {
+		pw, err := resetAdminPassword()
+		if err != nil {
+			log.Fatalf("[auth] password reset failed: %v", err)
+		}
+		reportReset(pw, resetViaFlag)
+		if resetViaFlag {
+			return
+		}
+	}
+
+	// Seed the admin password from ADMIN_PASSWORD when the database has none.
+	bootstrapAdmin()
 
 	if env.ALLOWED_ORIGIN != "" {
 		utils.AllowedOrigin = env.ALLOWED_ORIGIN
@@ -65,6 +84,14 @@ func main() {
 	mux.HandleFunc("/auth/reset-password", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
 			auth.HandleResetPassword(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	// Offline recovery: consume a one-time code to set a new password.
+	mux.HandleFunc("/auth/recovery", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			auth.HandleRecoveryReset(w, r)
 			return
 		}
 		http.NotFound(w, r)
@@ -114,6 +141,15 @@ func main() {
 	mux.HandleFunc("/api/key/regenerate", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
 			api.HandleKeyRegenerate(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	// Issue a fresh set of one-time offline recovery codes (authenticated).
+	mux.HandleFunc("/api/recovery/generate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			api.HandleRecoveryGenerate(w, r)
 			return
 		}
 		http.NotFound(w, r)
@@ -213,6 +249,115 @@ func main() {
 		log.Printf("[server] graceful shutdown timed out: %v", err)
 	}
 	log.Println("[server] stopped")
+}
+
+// parseResetRequest reports whether a password reset was asked for, either via
+// the --reset-password flag (reset, print, exit) or RESET_PASSWORD=1 (reset and
+// keep serving, which is what compose users need).
+//
+// This is deliberately a local, no-questions-asked operation. Whoever can run
+// this binary or edit the compose file can already read and rewrite the SQLite
+// database by hand, so the flag grants no capability that was not already
+// available — while it removes the "locked out of my own gateway" failure mode,
+// which is the one that actually happens in practice.
+func parseResetRequest() (requested bool, viaFlag bool) {
+	for _, arg := range os.Args[1:] {
+		if arg == "--reset-password" || arg == "-reset-password" {
+			return true, true
+		}
+	}
+	if os.Getenv("RESET_PASSWORD") == "1" {
+		return true, false
+	}
+	return false, false
+}
+
+// resetAdminPassword replaces the stored password hash, using ADMIN_PASSWORD
+// when set and a freshly generated password otherwise. A non-empty return value
+// is a generated password the caller must surface to the operator, since it is
+// never stored in plaintext.
+func resetAdminPassword() (string, error) {
+	cfg, err := storage.GetConfig()
+	if err != nil {
+		return "", err
+	}
+
+	if pw := os.Getenv("ADMIN_PASSWORD"); pw != "" {
+		hash, err := utils.HashPassword(pw)
+		if err != nil {
+			return "", err
+		}
+		cfg.Username = "admin"
+		cfg.PasswordHash = hash
+		return "", storage.SaveConfig(cfg)
+	}
+
+	pw := utils.GeneratePassword(20)
+	if pw == "" {
+		return "", errors.New("could not generate a random password")
+	}
+	hash, err := utils.HashPassword(pw)
+	if err != nil {
+		return "", err
+	}
+	cfg.Username = "admin"
+	cfg.PasswordHash = hash
+	if err := storage.SaveConfig(cfg); err != nil {
+		return "", err
+	}
+	return pw, nil
+}
+
+// reportReset prints the outcome of a reset. A generated password is echoed
+// exactly once, to stdout, and never persisted in plaintext.
+func reportReset(generated string, viaFlag bool) {
+	if generated != "" {
+		log.Printf("[auth] new admin password: %s", generated)
+		log.Printf("[auth] save it now — it is not stored anywhere in plaintext")
+	} else {
+		log.Printf("[auth] admin password reset from ADMIN_PASSWORD")
+	}
+	if viaFlag {
+		log.Printf("[auth] done; start the gateway normally to sign in")
+		return
+	}
+	log.Printf("[auth] WARNING: RESET_PASSWORD=1 is still set — remove it, or every restart resets the password again")
+}
+
+// bootstrapAdmin seeds the admin password from ADMIN_PASSWORD when the database
+// has no password yet. Without it, an uninitialised instance would depend on
+// ALLOW_FIRST_RUN_ANY_PASSWORD, which is unsafe on a network-reachable host.
+func bootstrapAdmin() {
+	cfg, err := storage.GetConfig()
+	if err != nil {
+		log.Printf("[auth] could not read config during bootstrap: %v", err)
+		return
+	}
+	if cfg.PasswordHash != "" {
+		return
+	}
+
+	if pw := os.Getenv("ADMIN_PASSWORD"); pw != "" {
+		hash, err := utils.HashPassword(pw)
+		if err != nil {
+			log.Printf("[auth] ADMIN_PASSWORD could not be hashed: %v", err)
+			return
+		}
+		cfg.Username = "admin"
+		cfg.PasswordHash = hash
+		if err := storage.SaveConfig(cfg); err != nil {
+			log.Printf("[auth] could not persist ADMIN_PASSWORD: %v", err)
+			return
+		}
+		log.Println("[auth] admin password initialised from ADMIN_PASSWORD")
+		return
+	}
+
+	if os.Getenv("ALLOW_FIRST_RUN_ANY_PASSWORD") == "1" {
+		log.Println("[auth] WARNING: no password set and ALLOW_FIRST_RUN_ANY_PASSWORD=1 — the first login with any password will claim this instance")
+		return
+	}
+	log.Println("[auth] no admin password configured; sign-in is disabled until you set ADMIN_PASSWORD or start with --reset-password")
 }
 
 func buildProviderList() []map[string]interface{} {

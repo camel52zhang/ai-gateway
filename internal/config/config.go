@@ -50,6 +50,7 @@ type CustomProvider struct {
 type Config struct {
 	Username        string                    `json:"username"`
 	PasswordHash    string                    `json:"passwordHash"`
+	RecoveryCodes   []string                  `json:"recoveryCodes,omitempty"`
 	Providers       []UserProvider            `json:"providers"`
 	UnifiedKey      string                    `json:"unifiedKey"`
 	CustomProviders []CustomProvider          `json:"customProviders"`

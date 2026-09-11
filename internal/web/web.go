@@ -31,15 +31,18 @@ func RenderLogin() string {
     button:disabled { opacity:.5; cursor:not-allowed; }
     button:hover:not(:disabled) { background:#333; }
     .error { background:#fef2f2; color:#dc2626; padding:10px; border-radius:8px; font-size:13px; text-align:center; margin-bottom:16px; display:none; }
+    .info { background:#f0fdf4; color:#15803d; padding:10px; border-radius:8px; font-size:13px; text-align:center; margin-bottom:16px; display:none; }
     .footer { text-align:center; margin-top:16px; font-size:12px; color:#aaa; }
+    .footer a { color:#666; text-decoration:underline; cursor:pointer; }
     .spinner { display:none; }
   </style>
 </head>
 <body>
   <div class="card">
     <h2>登录到 AI 网关</h2>
-    <p class="sub">请输入凭据以访问控制台</p>
+    <p class="sub" id="subtitle">请输入凭据以访问控制台</p>
     <div id="error" class="error"></div>
+    <div id="info" class="info"></div>
     <form id="login-form">
       <label for="username">用户名</label>
       <input id="username" type="text" required autocomplete="username">
@@ -47,27 +50,109 @@ func RenderLogin() string {
       <input id="password" type="password" required autocomplete="current-password">
       <button type="submit" id="submit-btn">登录</button>
     </form>
-    <p class="footer">登录后可在「设置」页面修改密码</p>
+    <form id="recovery-form" style="display:none">
+      <label for="recovery-code">恢复码</label>
+      <input id="recovery-code" type="text" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+      <label for="new-password">新密码</label>
+      <input id="new-password" type="password" autocomplete="new-password">
+      <label for="new-password2">确认新密码</label>
+      <input id="new-password2" type="password" autocomplete="new-password">
+      <button type="submit" id="recovery-btn">用恢复码重置密码</button>
+    </form>
+    <p class="footer" id="footer">登录后可在「设置」页面修改密码 · <a id="recovery-link">忘记密码？用恢复码</a></p>
+    <p class="footer" id="back-footer" style="display:none"><a id="back-link">返回登录</a></p>
   </div>
   <script>
-    document.getElementById('login-form').addEventListener('submit', async function(e) {
-      e.preventDefault();
-      var btn = document.getElementById('submit-btn');
+    (function() {
+      var loginForm = document.getElementById('login-form');
+      var recForm = document.getElementById('recovery-form');
       var errDiv = document.getElementById('error');
-      btn.disabled = true; btn.textContent = '登录中...';
-      errDiv.style.display = 'none';
-      try {
-        var res = await fetch('/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: document.getElementById('username').value, password: document.getElementById('password').value }),
-        });
-        if (res.ok) { window.location.href = '/'; return; }
-        var d = await res.json();
-        errDiv.textContent = d.error || '登录失败'; errDiv.style.display = 'block';
-      } catch(e) { errDiv.textContent = '网络错误'; errDiv.style.display = 'block'; }
-      finally { btn.disabled = false; btn.textContent = '登录'; }
-    });
+      var infoDiv = document.getElementById('info');
+      var subtitle = document.getElementById('subtitle');
+      var footer = document.getElementById('footer');
+      var backFooter = document.getElementById('back-footer');
+
+      function showError(msg) { infoDiv.style.display = 'none'; errDiv.textContent = msg; errDiv.style.display = 'block'; }
+      function showInfo(msg) { errDiv.style.display = 'none'; infoDiv.textContent = msg; infoDiv.style.display = 'block'; }
+      function clearMsgs() { errDiv.style.display = 'none'; infoDiv.style.display = 'none'; }
+
+      loginForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        var btn = document.getElementById('submit-btn');
+        clearMsgs();
+        btn.disabled = true; btn.textContent = '登录中...';
+        try {
+          var res = await fetch('/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: document.getElementById('username').value, password: document.getElementById('password').value }),
+          });
+          if (res.ok) { window.location.href = '/'; return; }
+          var d = await res.json().catch(function() { return {}; });
+          showError(d.error || '登录失败');
+        } catch(e) { showError('网络错误'); }
+        finally { btn.disabled = false; btn.textContent = '登录'; }
+      });
+
+      document.getElementById('recovery-link').addEventListener('click', function(e) {
+        e.preventDefault();
+        clearMsgs();
+        loginForm.style.display = 'none';
+        footer.style.display = 'none';
+        backFooter.style.display = 'block';
+        recForm.style.display = 'block';
+        subtitle.textContent = '输入一次性恢复码以设置新密码';
+        document.getElementById('recovery-code').focus();
+      });
+
+      document.getElementById('back-link').addEventListener('click', function(e) {
+        e.preventDefault();
+        clearMsgs();
+        recForm.style.display = 'none';
+        backFooter.style.display = 'none';
+        footer.style.display = 'block';
+        loginForm.style.display = 'block';
+        subtitle.textContent = '请输入凭据以访问控制台';
+      });
+
+      recForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        var code = document.getElementById('recovery-code').value.trim();
+        var p1 = document.getElementById('new-password').value;
+        var p2 = document.getElementById('new-password2').value;
+        if (!code) { showError('请输入恢复码'); return; }
+        if (p1.length < 6) { showError('新密码至少 6 位'); return; }
+        if (p1 !== p2) { showError('两次输入的密码不一致'); return; }
+
+        var btn = document.getElementById('recovery-btn');
+        clearMsgs();
+        btn.disabled = true; btn.textContent = '提交中...';
+        try {
+          var res = await fetch('/auth/recovery', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: code, newPassword: p1 }),
+          });
+          var d = await res.json().catch(function() { return {}; });
+          if (res.ok) {
+            recForm.reset();
+            recForm.style.display = 'none';
+            backFooter.style.display = 'none';
+            footer.style.display = 'block';
+            loginForm.style.display = 'block';
+            subtitle.textContent = '密码已重置，请用新密码登录';
+            var userInput = document.getElementById('username');
+            if (!userInput.value) userInput.value = 'admin';
+            document.getElementById('password').value = '';
+            document.getElementById('password').focus();
+            showInfo('密码已重置。剩余可用恢复码：' + (d.codesRemaining != null ? d.codesRemaining : 0) + ' 个');
+            return;
+          }
+          showError(d.error || '重置失败');
+        } catch(e) { showError('网络错误'); }
+        finally { btn.disabled = false; btn.textContent = '用恢复码重置密码'; }
+      });
+    })();
   </script>
 </body>
 </html>`
@@ -440,6 +525,28 @@ func renderDashboardTemplate(providerDataJSON string) string {
               </div>
             </div>
           </div>
+          <div class="card lg:col-span-2">
+            <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+              <div>
+                <h3 class="font-semibold mb-1">离线恢复码</h3>
+                <p class="text-xs text-gray-500">忘记密码时，可在登录页用一次性恢复码设置新密码。每个码只能使用一次，不依赖短信或邮箱。</p>
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-sm text-gray-600">剩余 <span class="font-medium" :class="recoveryCount > 0 ? 'text-green-600' : 'text-red-600'">{{ recoveryCount }}</span> 个</span>
+                <button @click="generateRecoveryCodes" :disabled="recoveryLoading" class="btn btn-secondary text-sm">
+                  <span v-if="!recoveryLoading"><i class="fas fa-key mr-1"></i>生成新的恢复码</span>
+                  <span v-else><i class="fas fa-circle-notch fa-spin mr-1"></i>生成中...</span>
+                </button>
+              </div>
+            </div>
+            <div v-if="recoveryCodes.length" class="bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <p class="text-xs text-amber-800 mb-2"><i class="fas fa-exclamation-triangle mr-1"></i>这些恢复码只显示这一次，离开页面后无法再次查看，请立即保存到密码管理器或离线记录。</p>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-1 font-mono text-sm">
+                <div v-for="(c, i) in recoveryCodes" :key="'rc'+i" class="bg-white rounded px-2 py-1 border border-amber-200">{{ c }}</div>
+              </div>
+              <button @click="copyRecoveryCodes" class="btn btn-secondary text-xs mt-3"><i class="fas fa-copy mr-1"></i>复制全部</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -627,6 +734,9 @@ func renderDashboardTemplate(providerDataJSON string) string {
           // Password
           passwordForm: { currentPassword: '', newPassword: '', confirmPassword: '' },
           passwordLoading: false,
+          // Offline recovery codes (plaintext is shown once, never stored)
+          recoveryCodes: [],
+          recoveryLoading: false,
           // Custom provider
           showCustomForm: false,
           editingCustomId: '',
@@ -661,6 +771,9 @@ func renderDashboardTemplate(providerDataJSON string) string {
         };
       },
       computed: {
+        recoveryCount() {
+          return this.config.recoveryCodesRemaining || 0;
+        },
         categoryButtons() {
           const cats = [{ key: 'all', label: '全部' }];
           for (const key of Object.keys(this.providerCategories || {})) {
@@ -1219,6 +1332,38 @@ func renderDashboardTemplate(providerDataJSON string) string {
             } else { const d = await res.json(); this.showToast(d.error || '修改失败', 'error'); }
           } catch { this.showToast('网络错误', 'error'); }
           finally { this.passwordLoading = false; }
+        },
+        // Offline recovery codes: the plaintext set is returned once and only
+        // its digests are persisted, so it must be saved immediately.
+        async generateRecoveryCodes() {
+          if (this.recoveryCount > 0 && !confirm('生成新恢复码会作废现有的 ' + this.recoveryCount + ' 个恢复码，确定继续吗？')) return;
+          this.recoveryLoading = true;
+          try {
+            const res = await fetch('/api/recovery/generate', { method:'POST', headers:{'Content-Type':'application/json'} });
+            const d = await res.json().catch(() => ({}));
+            if (res.ok) {
+              this.recoveryCodes = d.codes || [];
+              await this.fetchConfig();
+              this.showToast('已生成 ' + this.recoveryCodes.length + ' 个恢复码，请立即保存', 'success');
+            } else {
+              this.showToast(d.error || '生成失败', 'error');
+            }
+          } catch { this.showToast('网络错误', 'error'); }
+          finally { this.recoveryLoading = false; }
+        },
+        copyRecoveryCodes() {
+          const text = this.recoveryCodes.join('\n');
+          const done = () => this.showToast('恢复码已复制到剪贴板', 'success');
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => this.showToast('复制失败，请手动选择复制', 'error'));
+            return;
+          }
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); done(); } catch (e) { this.showToast('复制失败，请手动选择复制', 'error'); }
+          document.body.removeChild(ta);
         },
         async logout() {
           await fetch('/auth/logout', { method:'POST' });

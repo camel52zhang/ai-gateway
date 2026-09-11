@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 
@@ -212,6 +213,19 @@ func GetSession(sid string) (string, error) {
 
 func DeleteSession(sid string) error {
 	return db.KVDelete("session:" + sid)
+}
+
+// DeleteAllSessions invalidates every active session. A password reset is
+// normally a response to being locked out — or to a suspected compromise — so
+// no previously issued session should outlive it.
+func DeleteAllSessions() {
+	env := GetEnv()
+	if env == nil || env.DB == nil {
+		return
+	}
+	if _, err := env.DB.Exec(`DELETE FROM kv WHERE key LIKE 'session:%'`); err != nil {
+		log.Printf("[storage] failed to clear sessions: %v", err)
+	}
 }
 
 // --- Stats ---

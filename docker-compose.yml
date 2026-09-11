@@ -5,8 +5,16 @@
 #   2. docker compose up -d --build
 #   3. 浏览器打开 http://localhost:7000
 #
-# 首次运行：容器内会生成 data/gateway.db，管理员用户名为 admin，
-#          第一次用任意密码登录后即被哈希保存（与项目原逻辑一致）。
+# 首次运行：容器内会生成 data/gateway.db，管理员用户名为 admin。
+#          建议在 .env 里设置 ADMIN_PASSWORD，启动时即完成初始化；
+#          若未设置，登录会被拒绝（默认不再接受"任意密码"），此时可用
+#          `docker compose run --rm ai-gateway --reset-password` 生成随机密码。
+#
+# 忘记密码（三种方式，均不依赖短信/邮箱）：
+#   1) docker compose run --rm ai-gateway --reset-password
+#      —— 生成随机密码并打印，改完即退出，不影响正在运行的容器。
+#   2) .env 设 ADMIN_PASSWORD=... 与 RESET_PASSWORD=1，重启一次，用完移除。
+#   3) 登录页「忘记密码？用恢复码」——用设置页生成的离线恢复码自助重置。
 #
 # 数据持久化：命名卷 gateway-data 挂载到 /app/data，容器重建/升级不丢数据。
 # 端口映射：宿主机 ${PORT:-7000} -> 容器 7000（容器内固定 7000）。
@@ -35,6 +43,15 @@ services:
     environment:
       PORT: "7000"
       ALLOWED_ORIGIN: "${ALLOWED_ORIGIN:-}"
+      # 首次启动时用该密码初始化 admin 账号（强烈建议设置）
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      # 置 1 时，本次启动会把密码重置为 ADMIN_PASSWORD；未设置 ADMIN_PASSWORD
+      # 则生成随机密码并打印到容器日志。用完请立即移除该变量。
+      RESET_PASSWORD: "${RESET_PASSWORD:-0}"
+      # 放在 nginx 等反向代理后面时置 1，登录限流才会按真实客户端 IP 计数
+      # （否则所有请求都来自代理 IP，等于全局限流，攻击者可把管理员锁在门外）。
+      # 仅在确认前置代理会重写 X-Real-IP / X-Forwarded-For 时才开启。
+      TRUST_PROXY: "${TRUST_PROXY:-0}"
     volumes:
       - gateway-data:/app/data
 

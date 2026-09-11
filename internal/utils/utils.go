@@ -89,6 +89,81 @@ func TimingSafeCompare(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+// --- Random string / password / recovery-code generation ---
+
+// passwordAlphabet omits visually ambiguous characters (0/O, 1/l/I) so a
+// generated password can be transcribed from a terminal or log without error.
+const passwordAlphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+// recoveryAlphabet is upper-case only for the same reason: recovery codes get
+// written down and typed back in later.
+const recoveryAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+// randomString draws n characters uniformly from alphabet using rejection
+// sampling, so every symbol is equally likely. A naive modulo would bias the
+// first 256%len(alphabet) symbols; irrelevant for a password, sloppy
+// nonetheless.
+func randomString(alphabet string, n int) string {
+	if len(alphabet) == 0 || n <= 0 {
+		return ""
+	}
+	limit := 256 - (256 % len(alphabet))
+	out := make([]byte, 0, n)
+	buf := make([]byte, 1)
+	for len(out) < n {
+		if _, err := rand.Read(buf); err != nil {
+			return ""
+		}
+		if int(buf[0]) >= limit {
+			continue
+		}
+		out = append(out, alphabet[int(buf[0])%len(alphabet)])
+	}
+	return string(out)
+}
+
+// GeneratePassword returns a random password of n characters.
+func GeneratePassword(n int) string {
+	return randomString(passwordAlphabet, n)
+}
+
+// GenerateRecoveryCode returns a high-entropy one-time code formatted as
+// XXXX-XXXX-XXXX-XXXX-XXXX (20 symbols from a 32-symbol alphabet, ~100 bits).
+func GenerateRecoveryCode() string {
+	raw := randomString(recoveryAlphabet, 20)
+	if raw == "" {
+		return ""
+	}
+	parts := make([]string, 0, 5)
+	for i := 0; i < len(raw); i += 4 {
+		parts = append(parts, raw[i:i+4])
+	}
+	return strings.Join(parts, "-")
+}
+
+// NormalizeRecoveryCode drops separators and case so a code typed without its
+// dashes, or in lower case, still verifies.
+func NormalizeRecoveryCode(code string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(code) {
+		switch r {
+		case '-', ' ', '\t', '\r', '\n':
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// HashRecoveryCode returns a digest of the normalised code. Recovery codes are
+// already high-entropy random values, so a fast digest is the right primitive
+// here: a slow KDF would only make legitimate resets sluggish and turn the
+// unauthenticated recovery endpoint into a cheap CPU-exhaustion target.
+func HashRecoveryCode(code string) string {
+	sum := sha256.Sum256([]byte(NormalizeRecoveryCode(code)))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
 // --- Token / Session ID generation ---
 
 func GenerateSessionID() string {
