@@ -49,9 +49,11 @@ docker compose up -d --build
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `PORT` | `7000` | 监听端口（**容器内固定 7000**，宿主机映射用 compose 的 `${PORT:-7000}`） |
+| `IMAGE` | `ai-gateway:latest` | 使用/拉取的镜像名。只拉官方镜像的机器设为 `camel52zhang/ai-gateway:latest`，`docker compose pull` 才拉得到 |
 | `ALLOWED_ORIGIN` | 空（允许任意来源） | CORS 允许来源；生产建议设为你的前端域名，例如 `https://gw.example.com` |
 | `ADMIN_PASSWORD` | 空 | 首次启动时用它初始化 `admin` 账号（**建议设置**）。未设置且库中无密码时，登录会被拒绝 |
 | `RESET_PASSWORD` | `0` | 置 `1` 时本次启动会重置密码（用 `ADMIN_PASSWORD`；未设置则生成随机密码并打印到日志）。**用完请立即移除** |
+| `ALLOW_FIRST_RUN_ANY_PASSWORD` | `0` | ⚠️ 置 `1` 时首次运行接受任意密码登录（旧的宽松行为）。**公网环境切勿开启** |
 | `TRUST_PROXY` | `0` | 部署在 nginx 等反向代理后面时置 `1`，登录限流**与请求日志**才按真实客户端 IP 计数（否则所有请求都来自代理 IP，限流退化为全局、日志里也只剩代理地址） |
 | `VERSION` | `dev` | 仅构建期生效，注入启动横幅打印的版本号：`VERSION=$(git rev-parse --short HEAD) docker compose build` |
 
