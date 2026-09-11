@@ -7,7 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -37,6 +39,9 @@ func NoContent(w http.ResponseWriter) {
 	w.WriteHeader(204)
 }
 
+// writeCORS mirrors the headers set by main.corsMiddleware for handlers that
+// write the response directly. Credentials are intentionally not advertised —
+// see the comment on corsMiddleware for why.
 func writeCORS(w http.ResponseWriter) {
 	origin := AllowedOrigin
 	if origin == "" {
@@ -45,9 +50,6 @@ func writeCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, DELETE")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Cookie")
-	if origin != "*" {
-		w.Header().Set("Access-Control-Allow-Credentials", "true")
-	}
 }
 
 // --- Password hashing (PBKDF2-SHA256, 100k iter, 16-byte salt) ---
@@ -180,6 +182,13 @@ func GenerateToken(prefix string) string {
 
 // --- Cookie helpers ---
 
+// BuildCookie renders a Set-Cookie value. ttl is in seconds; Max-Age is omitted
+// for non-positive values, which produces a session-ending (delete) cookie.
+//
+// SameSite=Strict is deliberate and load-bearing: the dashboard session cookie
+// must never travel on a cross-site request. Anything that needs credentialed
+// cross-origin access would have to relax this, which would in turn require
+// real CSRF protection — so see the note in corsMiddleware before changing it.
 func BuildCookie(name, value string, ttl int, httpOnly, secure bool) string {
 	var parts []string
 	parts = append(parts, name+"="+value)
@@ -192,10 +201,42 @@ func BuildCookie(name, value string, ttl int, httpOnly, secure bool) string {
 		parts = append(parts, "Secure")
 	}
 	if ttl > 0 {
-		maxAge := int(time.Duration(ttl) * time.Second / time.Second)
-		parts = append(parts, fmt.Sprintf("Max-Age=%d", maxAge))
+		parts = append(parts, fmt.Sprintf("Max-Age=%d", ttl))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// --- Client address ---
+
+// ClientIP extracts the real client address from a request.
+//
+// Behind a reverse proxy every request arrives carrying the proxy's own
+// address in RemoteAddr, which silently turns per-IP decisions into global
+// ones: ten bad logins by an attacker would lock the legitimate operator out of
+// the whole window, and every request-log entry would name the proxy instead of
+// the client. Trusting the forwarding headers is only safe when a proxy really
+// is in front and rewrites them, hence the explicit TRUST_PROXY opt-in —
+// otherwise any client could forge its address and dodge the limiter entirely.
+//
+// When trusted we prefer X-Real-IP (set by the bundled nginx snippet) and fall
+// back to the LAST entry of X-Forwarded-For: nginx appends the address it
+// actually observed, so the final hop is trustworthy while a client-supplied
+// prefix is attacker-controlled.
+func ClientIP(r *http.Request) string {
+	if os.Getenv("TRUST_PROXY") == "1" {
+		if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); ip != "" {
+			return ip
+		}
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			return strings.TrimSpace(parts[len(parts)-1])
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 // --- JSON body parsing ---

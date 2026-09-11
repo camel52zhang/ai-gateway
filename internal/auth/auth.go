@@ -2,10 +2,8 @@ package auth
 
 import (
 	"log"
-	"net"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +14,8 @@ import (
 var (
 	loginRateLimit   = make(map[string]*loginEntry)
 	loginRateLimitMu sync.Mutex
+	// lastSweep throttles pruning of expired limiter entries (see sweepLocked).
+	lastSweep time.Time
 )
 
 type loginEntry struct {
@@ -28,42 +28,33 @@ const (
 	loginWindow      = 5 * time.Minute
 )
 
-// clientIP extracts the real client address used for rate limiting.
+// sweepLocked discards entries whose window has already expired.
 //
-// Behind a reverse proxy every request arrives carrying the proxy's own
-// address in RemoteAddr, which silently turns the per-IP login limiter into a
-// global one: ten bad attempts by an attacker would lock the legitimate
-// operator out for the whole window. Trusting the forwarding headers is only
-// safe when a proxy really is in front and rewrites them, hence the explicit
-// TRUST_PROXY opt-in — otherwise any client could forge its address and bypass
-// the limiter entirely.
-//
-// When trusted we prefer X-Real-IP (set by the bundled nginx snippet) and fall
-// back to the LAST entry of X-Forwarded-For: nginx appends the address it
-// actually observed, so the final hop is trustworthy while a client-supplied
-// prefix is attacker-controlled.
-func clientIP(r *http.Request) string {
-	if os.Getenv("TRUST_PROXY") == "1" {
-		if ip := strings.TrimSpace(r.Header.Get("X-Real-IP")); ip != "" {
-			return ip
-		}
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			return strings.TrimSpace(parts[len(parts)-1])
+// Without this the map keeps one entry per source IP that ever failed a login,
+// forever: /auth/login and /auth/recovery are unauthenticated, so a scanner
+// cycling through addresses would grow the map without bound (a slow memory
+// leak that only a restart clears). The sweep is amortised rather than run on
+// every request so the hot path stays O(1); at most one full pass per window.
+// Callers must hold loginRateLimitMu.
+func sweepLocked(now time.Time) {
+	if len(loginRateLimit) == 0 || now.Sub(lastSweep) < loginWindow {
+		return
+	}
+	lastSweep = now
+	for ip, e := range loginRateLimit {
+		if now.After(e.resetAt) {
+			delete(loginRateLimit, ip)
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 func checkLoginRateLimit(ip string) bool {
 	loginRateLimitMu.Lock()
 	defer loginRateLimitMu.Unlock()
+	now := time.Now()
+	sweepLocked(now)
 	e, ok := loginRateLimit[ip]
-	if !ok || time.Now().After(e.resetAt) {
+	if !ok || now.After(e.resetAt) {
 		return false
 	}
 	return e.count >= loginMaxAttempts
@@ -72,9 +63,11 @@ func checkLoginRateLimit(ip string) bool {
 func recordLoginFailure(ip string) {
 	loginRateLimitMu.Lock()
 	defer loginRateLimitMu.Unlock()
+	now := time.Now()
+	sweepLocked(now)
 	e, ok := loginRateLimit[ip]
-	if !ok || time.Now().After(e.resetAt) {
-		loginRateLimit[ip] = &loginEntry{count: 0, resetAt: time.Now().Add(loginWindow)}
+	if !ok || now.After(e.resetAt) {
+		loginRateLimit[ip] = &loginEntry{count: 0, resetAt: now.Add(loginWindow)}
 	}
 	loginRateLimit[ip].count++
 }
@@ -95,7 +88,7 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := clientIP(r)
+	ip := utils.ClientIP(r)
 	if checkLoginRateLimit(ip) {
 		w.Header().Set("Retry-After", "300")
 		utils.JSON(w, 429, map[string]string{"error": "Too many login attempts. Try again later."})
@@ -199,7 +192,22 @@ func HandleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg.PasswordHash = hash
-	storage.SaveConfig(cfg)
+	if err := storage.SaveConfig(cfg); err != nil {
+		utils.JSON(w, 500, map[string]string{"error": "Failed to save new password"})
+		return
+	}
+
+	// Changing a password is how you evict whoever holds the old one, so every
+	// existing session dies here — the same reasoning as HandleRecoveryReset.
+	// The caller gets a fresh session in exchange, so they are not thrown out of
+	// the tab they are typing in while every other device is signed out.
+	storage.DeleteAllSessions()
+	if sid, err := storage.CreateSession(cfg.Username); err != nil {
+		log.Printf("[auth] could not re-issue session after password change: %v", err)
+	} else {
+		w.Header().Set("Set-Cookie", utils.BuildCookie("session_id", sid, storage.SessionTTL, true, r.TLS != nil))
+	}
+
 	utils.JSON(w, 200, map[string]bool{"success": true})
 }
 
@@ -222,7 +230,7 @@ func HandleRecoveryReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip := clientIP(r)
+	ip := utils.ClientIP(r)
 	if checkLoginRateLimit(ip) {
 		w.Header().Set("Retry-After", "300")
 		utils.JSON(w, 429, map[string]string{"error": "Too many attempts. Try again later."})

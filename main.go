@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -22,6 +23,46 @@ import (
 	"ai-gateway/internal/utils"
 	"ai-gateway/internal/web"
 )
+
+// version can be injected at build time:
+//
+//	go build -ldflags "-X main.version=v1.2.3"
+//
+// When empty (the default) buildVersion falls back to the VCS revision the Go
+// toolchain records, so a binary reports the commit it was built from instead
+// of a hardcoded string that silently goes stale. The Docker build cannot use
+// that fallback — .dockerignore excludes .git — hence the VERSION build arg.
+var version = ""
+
+// buildVersion returns a short, human-readable build identifier.
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	rev, dirty := "", false
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev == "" {
+		return "dev"
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if dirty {
+		rev += "+dirty"
+	}
+	return rev
+}
 
 func main() {
 	// Password recovery entry points (see resetAdminPassword). Resolved before
@@ -209,7 +250,7 @@ func main() {
 	handler := securityHeaders(corsMiddleware(requestLogger(mux)))
 
 	log.Println(strings.Repeat("=", 33))
-	log.Printf("  AI Gateway Go v1.0")
+	log.Printf("  AI Gateway Go %s", buildVersion())
 	log.Printf("  http://0.0.0.0:%s", port)
 	log.Printf("  DB: %s (journal: %s)", db.DBPath(), db.JournalMode())
 	log.Println(strings.Repeat("=", 33))
@@ -434,7 +475,11 @@ func requestLogger(next http.Handler) http.Handler {
 				Timestamp: utils.NowISO(),
 				Method:    r.Method,
 				Path:      path,
-				IP:        r.RemoteAddr,
+				// ClientIP, not RemoteAddr: the latter carries a port and, behind
+				// nginx, is always the proxy — which made every Logs entry point at
+				// the reverse proxy instead of the caller. The rate limiter already
+				// uses this helper, so both now agree on who the client is.
+				IP:        utils.ClientIP(r),
 				UserAgent: utils.Truncate(r.UserAgent(), 200),
 			})
 		}

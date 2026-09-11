@@ -52,7 +52,8 @@ docker compose up -d --build
 | `ALLOWED_ORIGIN` | 空（允许任意来源） | CORS 允许来源；生产建议设为你的前端域名，例如 `https://gw.example.com` |
 | `ADMIN_PASSWORD` | 空 | 首次启动时用它初始化 `admin` 账号（**建议设置**）。未设置且库中无密码时，登录会被拒绝 |
 | `RESET_PASSWORD` | `0` | 置 `1` 时本次启动会重置密码（用 `ADMIN_PASSWORD`；未设置则生成随机密码并打印到日志）。**用完请立即移除** |
-| `TRUST_PROXY` | `0` | 部署在 nginx 等反向代理后面时置 `1`，登录限流才按真实客户端 IP 计数（否则所有请求都来自代理 IP，等于全局限流） |
+| `TRUST_PROXY` | `0` | 部署在 nginx 等反向代理后面时置 `1`，登录限流**与请求日志**才按真实客户端 IP 计数（否则所有请求都来自代理 IP，限流退化为全局、日志里也只剩代理地址） |
+| `VERSION` | `dev` | 仅构建期生效，注入启动横幅打印的版本号：`VERSION=$(git rev-parse --short HEAD) docker compose build` |
 
 数据持久化：命名卷 `gateway-data` 挂载到容器 `/app/data`（SQLite 数据库）。
 

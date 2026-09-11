@@ -1,24 +1,24 @@
-package auth
+package utils
 
 import (
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 )
 
 // TestClientIPIgnoresForwardedHeadersWithoutTrustProxy pins the secure default:
 // unless a proxy is explicitly trusted, a client must not be able to choose its
-// own rate-limit bucket by sending X-Real-IP / X-Forwarded-For.
+// own rate-limit bucket (or forge its own log entry) by sending X-Real-IP /
+// X-Forwarded-For.
 func TestClientIPIgnoresForwardedHeadersWithoutTrustProxy(t *testing.T) {
-	os.Unsetenv("TRUST_PROXY")
+	t.Setenv("TRUST_PROXY", "0")
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "192.0.2.10:5000"
 	req.Header.Set("X-Real-IP", "10.0.0.1")
 	req.Header.Set("X-Forwarded-For", "10.0.0.1")
 
-	if got := clientIP(req); got != "192.0.2.10" {
+	if got := ClientIP(req); got != "192.0.2.10" {
 		t.Fatalf("expected the socket peer, got %q", got)
 	}
 }
@@ -32,7 +32,7 @@ func TestClientIPUsesHeadersWhenProxyIsTrusted(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "172.18.0.5:5000"
 	req.Header.Set("X-Real-IP", "203.0.113.7")
-	if got := clientIP(req); got != "203.0.113.7" {
+	if got := ClientIP(req); got != "203.0.113.7" {
 		t.Fatalf("expected X-Real-IP, got %q", got)
 	}
 
@@ -42,19 +42,21 @@ func TestClientIPUsesHeadersWhenProxyIsTrusted(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
 	req2.RemoteAddr = "172.18.0.5:5000"
 	req2.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.9")
-	if got := clientIP(req2); got != "203.0.113.9" {
+	if got := ClientIP(req2); got != "203.0.113.9" {
 		t.Fatalf("expected the last XFF hop, got %q", got)
 	}
 }
 
 // TestClientIPFallsBackToRemoteAddr checks the bare-metal (no proxy) path, where
-// RemoteAddr still carries a port that must be stripped.
+// RemoteAddr still carries a port that must be stripped. The request log now
+// goes through the same helper, so a regression here would surface as
+// "1.2.3.4:54321" in the Logs tab instead of a usable address.
 func TestClientIPFallsBackToRemoteAddr(t *testing.T) {
-	os.Unsetenv("TRUST_PROXY")
+	t.Setenv("TRUST_PROXY", "0")
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "198.51.100.4:41234"
-	if got := clientIP(req); got != "198.51.100.4" {
+	if got := ClientIP(req); got != "198.51.100.4" {
 		t.Fatalf("expected the address without its port, got %q", got)
 	}
 }

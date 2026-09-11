@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # AI Gateway —— 容器冒烟测试脚本
-# 用法：bash smoke-test.sh [BASE_URL]
+# 用法：GW_TEST_PASSWORD=<admin密码> bash smoke-test.sh [BASE_URL]
 # 默认 BASE_URL=http://localhost:7000
+#
+# 关于密码：网关不再接受「首次运行任意密码」。未设置 ADMIN_PASSWORD 的实例会
+# 直接拒绝登录（403），因此本脚本需要一个已初始化的实例：
+#   1) 在 .env 里设 ADMIN_PASSWORD=... 后 docker compose up -d
+#   2) 或 docker compose run --rm ai-gateway --reset-password 生成随机密码
+# 然后用 GW_TEST_PASSWORD 把该密码传给本脚本。
 set -u
 
 BASE="${1:-http://localhost:7000}"
@@ -42,16 +48,34 @@ else
   fail "/ 未登录 -> $code (Location=$loc, 期望 302 -> /login)"
 fi
 
-# 4) 首次登录：任意密码都会被哈希保存（admin 用户）
-login_resp=$(curl -s -c "$JAR" -o /dev/null -w '%{http_code}' \
+# 4) 登录
+#    注意：未设 ADMIN_PASSWORD 的实例会返回 403（有意为之的安全默认，不再是
+#    「任意密码即可进入」）。403 不算失败，但要明确告诉使用者实例尚未初始化。
+login_code=$(curl -s -c "$JAR" -o /dev/null -w '%{http_code}' \
   -X POST "$BASE/auth/login" \
   -H 'Content-Type: application/json' \
   -d "{\"username\":\"admin\",\"password\":\"$PASS\"}")
-if [ "$login_resp" = "200" ] && [ -s "$JAR" ]; then
-  pass "/auth/login -> 200 且写入会话 cookie"
-else
-  fail "/auth/login -> $login_resp (期望 200 + cookie)"
-fi
+case "$login_code" in
+  200)
+    if [ -s "$JAR" ]; then pass "/auth/login -> 200 且写入会话 cookie"
+    else fail "/auth/login -> 200 但未写入会话 cookie"; fi
+    ;;
+  403)
+    warn "/auth/login -> 403：该实例尚未设置管理员密码（这是预期的拒绝，不是缺陷）"
+    warn "  先设 ADMIN_PASSWORD 重启，或 docker compose run --rm ai-gateway --reset-password"
+    warn "  拿到密码后：GW_TEST_PASSWORD=<密码> bash smoke-test.sh $BASE"
+    echo
+    echo -e "${YELLOW}结果: 实例未初始化，依赖登录的检查已跳过${NC}"
+    rm -f "$JAR" "$LOGINHTML" "$HDR"
+    exit 0
+    ;;
+  429)
+    warn "/auth/login -> 429：触发登录限流，等 5 分钟窗口过期后重试"
+    ;;
+  *)
+    fail "/auth/login -> $login_code (期望 200 + cookie)"
+    ;;
+esac
 
 # 5) 登录后访问受保护 API
 for ep in /api/stats /api/providers /api/config; do
@@ -70,8 +94,8 @@ else
   warn "/api/models?type=openai -> $mcode"
 fi
 
-# 6) 静态资源（Vue / Tailwind / Font Awesome）应可访问
-for f in /static/vue.global.js /static/tailwind.js /static/all.min.css; do
+# 6) 静态资源（Vue 生产版 / 构建期生成的 Tailwind CSS / Font Awesome）应可访问
+for f in /static/vue.global.prod.js /static/tailwind.css /static/all.min.css; do
   code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE$f")
   if [ "$code" = "200" ]; then pass "$f -> 200"; else fail "$f -> $code (期望 200)"; fi
 done

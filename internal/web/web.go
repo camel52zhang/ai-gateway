@@ -182,8 +182,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
   <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png?v=6">
   <link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png?v=6">
   <link rel="manifest" href="/static/site.webmanifest">
-  <script src="/static/tailwind.js"></script>
-  <script src="/static/vue.global.js"></script>
+  <script src="/static/vue.global.prod.js"></script>
   <link href="/static/all.min.css" rel="stylesheet">
   <style>
     :root { --radius:0.5rem; --primary:#000; --danger:#ef4444; --border:#e5e7eb; --success:#10b981; }
@@ -217,6 +216,13 @@ func renderDashboardTemplate(providerDataJSON string) string {
     .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; z-index:50; }
     .modal { background:#fff; border-radius:var(--radius); padding:1.5rem; max-width:500px; width:90%; max-height:80vh; overflow-y:auto; }
   </style>
+  <!-- Utilities are generated at build time from this file (Tailwind v3.4.17 CLI).
+       Build tooling lives in .workbuddy/tailwind-build/ (config, input.css and a
+       class-coverage checker); regenerate static/tailwind.css after changing any
+       class name below. The link sits after the page's own <style> on purpose —
+       the Play CDN it replaces injected its rules at the end of <head> at
+       runtime, so this preserves the original cascade order. -->
+  <link href="/static/tailwind.css" rel="stylesheet">
 </head>
 <body class="text-gray-800">
   <div id="app">

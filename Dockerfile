@@ -18,7 +18,12 @@ RUN go mod download
 
 # 复制全部源码并编译（trimpath + 去除符号表，减小体积）
 COPY . .
-RUN go build -trimpath -ldflags="-s -w" -o /out/ai-gateway .
+
+# VERSION 只影响启动横幅打印的版本号。.dockerignore 排除了 .git，构建期读不到
+# VCS revision，因此这里显式注入：CI 传 commit SHA，本地可传 git describe 结果。
+# 不传则回退为 "dev"（main.buildVersion 的行为）。
+ARG VERSION=dev
+RUN go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/ai-gateway .
 
 # ============================================================
 # 运行阶段：精简的 Alpine 镜像

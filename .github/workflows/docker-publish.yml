@@ -80,5 +80,9 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # 注入版本号，供启动横幅打印（.dockerignore 排除了 .git，构建期
+          # 无法自行读取 VCS revision）。
+          build-args: |
+            VERSION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -30,6 +30,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # 启动横幅里显示的版本号。.dockerignore 排除了 .git，构建期读不到 VCS
+      # revision，所以这里显式传；不传则为 "dev"。
+      #   VERSION=$(git rev-parse --short HEAD) docker compose build
+      args:
+        VERSION: "${VERSION:-dev}"
     image: ai-gateway:latest
     container_name: ai-gateway
     restart: unless-stopped
