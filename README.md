@@ -4,6 +4,8 @@
 
 纯 Go 实现（modernc.org/sqlite，零 CGO），编译为静态二进制，运行在精简的 Alpine 镜像里。
 
+> 📖 **详细操作手册**见 [`docs/GUIDE.md`](docs/GUIDE.md)：每个功能模块的使用方法、API 调用指南、运维备份升级、排障 FAQ。
+
 ---
 
 ## 功能特性
@@ -148,6 +150,8 @@ docker pull camel52zhang/ai-gateway:latest
 ├── Dockerfile              # 多阶段构建（golang:1.26-alpine → alpine:3.20）
 ├── docker-compose.yml        # 本地部署配置（源码构建 + 命名卷 + 健康检查）
 ├── vps-docker-compose.yml    # VPS/NAS 部署配置（免构建拉镜像 + 公网安全清单）
+├── docs/
+│   └── GUIDE.md              # 详细技术文档：操作与使用手册（功能模块 / API / 运维 / 排障）
 ├── docker-entrypoint.sh    # 修正数据目录属主后降权到 app 用户
 ├── .env.example            # 环境变量样例
 ├── main.go                 # 路由与启动入口（端口 7000）
