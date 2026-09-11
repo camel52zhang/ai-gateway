@@ -141,6 +141,9 @@ func InitStorage() *Env {
 	if useWALCheckpoint {
 		startWALCheckpoint(db, walCheckpointInterval())
 	}
+	if m, err := currentJournalMode(db); err == nil {
+		journalMode = m
+	}
 
 	// Clean expired
 	db.Exec(`DELETE FROM kv WHERE expires_at IS NOT NULL AND expires_at < ?`, time.Now().UnixMilli())
