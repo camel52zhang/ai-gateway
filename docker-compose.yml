@@ -48,6 +48,12 @@ services:
     # SIGTERM 正确转发给入口脚本 / 网关，配合程序的优雅关闭。
     init: true
 
+    # 安全硬化：禁止容器内的进程通过 setuid/setgid 二进制或文件能力「获得」新权限。
+    # 入口脚本以 root 启动、chown 后 su-exec 到 app 用户——那是「放弃」权限而非获取，
+    # 不受此选项影响（已实测启动、健康检查、登录均正常）。
+    security_opt:
+      - no-new-privileges:true
+
     ports:
       - "${PORT:-7000}:7000"
     environment:
