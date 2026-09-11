@@ -10,6 +10,12 @@
 #
 # 数据持久化：命名卷 gateway-data 挂载到 /app/data，容器重建/升级不丢数据。
 # 端口映射：宿主机 ${PORT:-7000} -> 容器 7000（容器内固定 7000）。
+#
+# 若想改用宿主机目录（便于直接备份/查看 gateway.db），把 volumes 换成：
+#   - ./gateway-data:/app/data
+# 并在首次启动前确保目录可写：mkdir -p gateway-data && chown -R 100:101 gateway-data
+# （镜像内 app 用户的 uid:gid = 100:101）。入口脚本在容器以 root 启动时
+#  会自动 chown /app/data，因此多数情况下无需手动处理。
 
 services:
   ai-gateway:
@@ -19,6 +25,11 @@ services:
     image: ai-gateway:latest
     container_name: ai-gateway
     restart: unless-stopped
+
+    # init: 由 Docker 注入一个轻量 init(PID 1)，负责回收僵尸进程并把
+    # SIGTERM 正确转发给入口脚本 / 网关，配合程序的优雅关闭。
+    init: true
+
     ports:
       - "${PORT:-7000}:7000"
     environment:
@@ -26,6 +37,10 @@ services:
       ALLOWED_ORIGIN: "${ALLOWED_ORIGIN:-}"
     volumes:
       - gateway-data:/app/data
+
+    # 优雅关闭窗口：给在途请求（含长流式生成）留出收尾时间
+    stop_grace_period: 15s
+
     healthcheck:
       # 容器内 busybox wget 探测 /health；连接失败即视为不健康
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7000/health || exit 1"]
@@ -33,6 +48,13 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+    # 日志滚动，避免长期运行时 json-file 日志无限增长占满磁盘
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   gateway-data:

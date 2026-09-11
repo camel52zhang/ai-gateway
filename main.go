@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"ai-gateway/internal/api"
 	"ai-gateway/internal/auth"
@@ -165,19 +169,50 @@ func main() {
 		proxy.HandleProxy(w, r)
 	})
 
-	// CORS middleware
-	handler := corsMiddleware(requestLogger(mux))
+	// Middleware chain (outermost first): security headers -> CORS -> request log
+	handler := securityHeaders(corsMiddleware(requestLogger(mux)))
 
 	log.Println(strings.Repeat("=", 33))
 	log.Printf("  AI Gateway Go v1.0")
 	log.Printf("  http://0.0.0.0:%s", port)
-
-	log.Printf("  DB: data/gateway.db")
+	log.Printf("  DB: %s (journal: %s)", db.DBPath(), db.JournalMode())
 	log.Println(strings.Repeat("=", 33))
 
-	if err := http.ListenAndServe(":"+port, handler); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: handler,
+		// ReadHeaderTimeout bounds slow-loris header stalls. ReadTimeout and
+		// WriteTimeout are intentionally left unset: long generations and SSE
+		// streams must never be cut off mid-flight.
+		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
+
+	// Serve in the background so the main goroutine can wait for a shutdown
+	// signal and drain in-flight requests instead of being killed abruptly by
+	// `docker stop` (which sends SIGTERM).
+	serverErr := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	select {
+	case err := <-serverErr:
+		log.Fatalf("Server failed: %v", err)
+	case sig := <-stop:
+		log.Printf("[server] received %s, shutting down gracefully", sig)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("[server] graceful shutdown timed out: %v", err)
+	}
+	log.Println("[server] stopped")
 }
 
 func buildProviderList() []map[string]interface{} {
@@ -191,6 +226,19 @@ func buildProviderList() []map[string]interface{} {
 		})
 	}
 	return list
+}
+
+// securityHeaders sets a small set of defensive response headers. They are
+// safe defaults for an admin dashboard + JSON API: no MIME sniffing, no
+// framing (clickjacking), and no referrer leakage.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func corsMiddleware(next http.Handler) http.Handler {

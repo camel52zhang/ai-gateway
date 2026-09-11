@@ -1,8 +1,16 @@
-# 版本控制与本地元数据（不应进入构建上下文）
+# ============================================================
+# Docker 构建上下文排除清单
+# 目标：只把「编译 + 运行」真正需要的东西送进 daemon，
+#       缩小上下文、加快构建、避免把文档/密钥/产物烧进镜像。
+# ============================================================
+
+# --- 版本控制与本地元数据 ---
 .git
+.gitignore
+.github
 .workbuddy
 
-# 运行时数据：SQLite 库及其 WAL 文件（容器内由命名卷提供，不烧进镜像）
+# --- 运行时数据：SQLite 库及 WAL/SHM（容器内由卷提供，不入镜像）---
 data
 *.db
 *.db-shm
@@ -11,7 +19,35 @@ test_local.db
 test_local.db-shm
 test_local.db-wal
 
-# 已编译的二进制（让 Docker 用源码重新构建，保持镜像可复现）
+# --- 已编译的二进制（让 Docker 从源码重建，保证镜像可复现）---
 *.exe
+*.exe~
 ai-gateway
+ai-gateway.exe
 ai-gateway-linux-amd64
+
+# --- 文档 / 排查记录（与运行无关）---
+*.md
+*.docx
+*.log
+
+# --- 部署辅助文件（宿主机侧使用，镜像内不需要）---
+# 注意：不要排除 Dockerfile 与 docker-entrypoint.sh，二者是构建所必需的。
+icon
+nginx-*.conf
+smoke-test.sh
+start.bat
+start.sh
+*.service
+docker-compose.yml
+
+# --- 环境变量与密钥（绝不进构建上下文）---
+.env
+.env.*
+!.env.example
+
+# --- 操作系统 / 编辑器噪声 ---
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp

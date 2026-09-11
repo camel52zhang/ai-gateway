@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -244,10 +245,36 @@ func HandleListModels(w http.ResponseWriter, r *http.Request) {
 // POST /v1/chat/completions — main proxy entry point
 // =============================================================================
 
-func HandleProxy(w http.ResponseWriter, r *http.Request) {
-	bodyBytes, err := io.ReadAll(r.Body)
+// maxRequestBody caps how much of a proxied request body the gateway will
+// buffer in memory. It is deliberately generous (long prompts / multi-modal
+// payloads), but it stops a runaway or hostile client from OOM-killing the
+// gateway on a memory-limited host.
+const maxRequestBody = 32 << 20 // 32 MiB
+
+// readBody reads the request body with a hard size cap, turning an over-limit
+// body into a MaxBytesError instead of unbounded memory growth.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	b, err := io.ReadAll(r.Body)
 	r.Body.Close()
+	return b, err
+}
+
+// ModelHidden reports whether a model is hidden/disabled in the gateway. It is
+// the exported form of isModelHidden so entry points outside this package (e.g.
+// the Responses API) can apply the exact same gate as the chat proxy.
+func ModelHidden(cfg *config.Config, provider, model string) bool {
+	return isModelHidden(cfg, provider, model)
+}
+
+func HandleProxy(w http.ResponseWriter, r *http.Request) {
+	bodyBytes, err := readBody(w, r)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			utils.JSON(w, 413, map[string]string{"error": "Request body too large"})
+			return
+		}
 		utils.JSON(w, 400, map[string]string{"error": "Failed to read body"})
 		return
 	}
@@ -901,6 +928,8 @@ func HandleHealth(w http.ResponseWriter, r *http.Request) {
 		"degradedProviders":    degraded,
 		"circuitOpenProviders": circuitOpen,
 		"failureCount":         failures,
+		"dbPath":               db.DBPath(),
+		"journalMode":          db.JournalMode(),
 		"timestamp":            utils.NowISO(),
 	})
 }
@@ -955,8 +984,8 @@ func convertCompletionToSSE(w http.ResponseWriter, src io.Reader, model string) 
 	var c struct {
 		ID      string `json:"id"`
 		Choices []struct {
-			Index        int    `json:"index"`
-			Message      struct {
+			Index   int `json:"index"`
+			Message struct {
 				Role             string `json:"role"`
 				Content          string `json:"content"`
 				ReasoningContent string `json:"reasoning_content"`
@@ -974,18 +1003,18 @@ func convertCompletionToSSE(w http.ResponseWriter, src io.Reader, model string) 
 		msg := c.Choices[0].Message
 		emit(map[string]interface{}{
 			"id": c.ID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
-			"choices": []map[string]interface{}{{ "index": idx, "delta": map[string]interface{}{"role": "assistant"} }},
+			"choices": []map[string]interface{}{{"index": idx, "delta": map[string]interface{}{"role": "assistant"}}},
 		})
 		if msg.ReasoningContent != "" {
 			emit(map[string]interface{}{
 				"id": c.ID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
-				"choices": []map[string]interface{}{{ "index": idx, "delta": map[string]interface{}{"reasoning_content": msg.ReasoningContent} }},
+				"choices": []map[string]interface{}{{"index": idx, "delta": map[string]interface{}{"reasoning_content": msg.ReasoningContent}}},
 			})
 		}
 		if msg.Content != "" {
 			emit(map[string]interface{}{
 				"id": c.ID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
-				"choices": []map[string]interface{}{{ "index": idx, "delta": map[string]interface{}{"content": msg.Content} }},
+				"choices": []map[string]interface{}{{"index": idx, "delta": map[string]interface{}{"content": msg.Content}}},
 			})
 		}
 		var usage map[string]interface{}
@@ -998,7 +1027,7 @@ func convertCompletionToSSE(w http.ResponseWriter, src io.Reader, model string) 
 		}
 		emit(map[string]interface{}{
 			"id": c.ID, "object": "chat.completion.chunk", "created": time.Now().Unix(), "model": model,
-			"choices": []map[string]interface{}{{ "index": idx, "delta": map[string]interface{}{}, "finish_reason": c.Choices[0].FinishReason }},
+			"choices": []map[string]interface{}{{"index": idx, "delta": map[string]interface{}{}, "finish_reason": c.Choices[0].FinishReason}},
 			"usage":   usage,
 		})
 		fmt.Fprintf(w, "data: [DONE]\n\n")

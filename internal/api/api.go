@@ -19,6 +19,10 @@ import (
 	"ai-gateway/internal/utils"
 )
 
+// maxResponsesBody caps the buffered size of a /v1/responses request body so a
+// huge payload cannot exhaust the gateway's memory.
+const maxResponsesBody = 32 << 20 // 32 MiB
+
 func HandleConfigGet(w http.ResponseWriter, r *http.Request) {
 	if !storage.IsAuthenticated(r) {
 		utils.JSON(w, 401, map[string]string{"error": "Authentication required"})
@@ -682,6 +686,8 @@ func HandleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cap the buffered body size so a huge payload cannot exhaust memory.
+	r.Body = http.MaxBytesReader(w, r.Body, maxResponsesBody)
 	var body map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		utils.JSON(w, 400, map[string]string{"error": "Invalid JSON"})
@@ -706,6 +712,26 @@ func HandleResponses(w http.ResponseWriter, r *http.Request) {
 	provider := providers.ResolveProvider(model, cfg.Providers, cfg.CustomProviders)
 	if provider == nil {
 		utils.JSON(w, 404, map[string]string{"error": "No matching provider found for model: " + model})
+		return
+	}
+
+	// Enforce the same pause / hidden-model gates as the chat proxy. Without
+	// this, a paused provider or a hidden model would still be reachable
+	// through the Responses API even though /v1/chat/completions rejects it.
+	if provider.Paused {
+		utils.JSON(w, 404, map[string]string{
+			"error": "Provider " + provider.Type + " is paused in the gateway and cannot be used.",
+		})
+		return
+	}
+	bareModel := model
+	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 && parts[0] == provider.Type {
+		bareModel = parts[1]
+	}
+	if proxy.ModelHidden(cfg, provider.Type, bareModel) {
+		utils.JSON(w, 404, map[string]string{
+			"error": "Model " + model + " is hidden/disabled in the gateway and cannot be used.",
+		})
 		return
 	}
 

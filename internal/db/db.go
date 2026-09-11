@@ -15,6 +15,21 @@ import (
 
 var db *sql.DB
 
+// resolvedDBPath and journalMode are recorded at init time so the health
+// endpoint and startup banner can report exactly which database file was
+// opened and which journal mode the host actually accepted — invaluable when
+// diagnosing read-only / WAL problems on a VPS.
+var (
+	resolvedDBPath = "data/gateway.db"
+	journalMode    = "unknown"
+)
+
+// DBPath returns the resolved SQLite file path.
+func DBPath() string { return resolvedDBPath }
+
+// JournalMode returns the effective journal mode ("wal" or "delete").
+func JournalMode() string { return journalMode }
+
 // useWALCheckpoint is set by InitStorage: true only when WAL mode is both
 // requested and verified to actually work in this environment. Some
 // container/filesystem setups cannot mmap the WAL -shm file (error
@@ -60,11 +75,16 @@ func startWALCheckpoint(db *sql.DB, interval time.Duration) {
 
 func InitStorage() *Env {
 	dataDir := filepath.Join("data")
-	os.MkdirAll(dataDir, 0755)
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		// Do not bail out yet: the DB open below will fail loudly with a more
+		// specific error if the directory truly is unusable.
+		log.Printf("[db] cannot create data dir %s: %v", dataDir, err)
+	}
 	dbPath := os.Getenv("DB_PATH")
 	if dbPath == "" {
 		dbPath = filepath.Join(dataDir, "gateway.db")
 	}
+	resolvedDBPath = dbPath
 
 	var err error
 	// Open WITHOUT forcing WAL in the DSN. WAL needs a memory-mapped -shm file,
@@ -154,6 +174,17 @@ func probeWAL(db *sql.DB) bool {
 	}
 	log.Printf("[db] journal mode: WAL (checkpoint loop enabled)")
 	return true
+}
+
+// currentJournalMode reads the effective journal mode straight from SQLite so
+// the reported mode reflects what the host actually accepted (WAL may have been
+// rolled back to DELETE by probeWAL).
+func currentJournalMode(d *sql.DB) (string, error) {
+	var mode string
+	if err := d.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		return "", err
+	}
+	return strings.ToLower(mode), nil
 }
 
 // --- KV Adapter ---

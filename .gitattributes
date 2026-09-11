@@ -1,0 +1,31 @@
+# ============================================================
+# 换行符策略
+# ============================================================
+# 背景：仓库在 Windows 上以 core.autocrlf=true 检出会把所有文本转成 CRLF。
+# 对 Go 源码无影响，但 shell 脚本一旦是 CRLF，进入 Linux 容器后
+# shebang 变成 "#!/bin/sh\r"，内核找不到解释器 → 容器直接启动失败。
+# 因此把 shell 脚本强制钉成 LF，由 Git 在提交/检出两侧自动归一化。
+
+# Shell 脚本必须 LF（容器内执行）
+*.sh            text eol=lf
+
+# Windows 批处理必须 CRLF
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+
+# 构建与部署描述文件保持 LF（跨平台解析更稳）
+Dockerfile      text eol=lf
+docker-compose.yml text eol=lf
+.gitattributes  text eol=lf
+.gitignore      text eol=lf
+.dockerignore   text eol=lf
+
+# 二进制资源不做任何转换
+*.png           binary
+*.ico           binary
+*.svg           binary
+*.woff2         binary
+*.ttf           binary
+*.webmanifest   binary
+*.db            binary
+*.exe           binary

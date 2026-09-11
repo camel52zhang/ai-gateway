@@ -9,6 +9,8 @@ set -e
 # no-op when already correct) so redeploys never silently break on a read-only
 # DB. Then drop privileges to 'app'.
 if [ "$(id -u)" = "0" ]; then
+  # A fresh named volume or bind mount may not exist yet / may be root-owned.
+  mkdir -p /app/data
   chown -R app:app /app/data 2>/dev/null || true
   exec su-exec app /app/ai-gateway "$@"
 fi

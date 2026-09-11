@@ -1,4 +1,7 @@
-# syntax=docker/dockerfile:1
+# NOTE: deliberately NO `# syntax=docker/dockerfile:1` directive. This build
+# uses only stock Dockerfile features, and the frontend directive would force a
+# pull of the dockerfile image from Docker Hub on every build — which hangs
+# behind a flaky proxy (auth.docker.io 502). Keep the built-in frontend.
 
 # ============================================================
 # 构建阶段：编译 Go 二进制
@@ -39,7 +42,10 @@ COPY --from=build /out/ai-gateway /app/ai-gateway
 COPY static   /app/static
 COPY webfonts /app/webfonts
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+# 防御：若构建上下文里的脚本被 CRLF 污染（Windows core.autocrlf=true 检出），
+# shebang 会变成 "#!/bin/sh\r" 导致内核找不到解释器、容器直接起不来。
+# 这里强制转成 LF，保证镜像在任何宿主机换行符下都能正常启动。
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
 EXPOSE 7000
 
@@ -52,5 +58,11 @@ ENV PORT=7000 \
     https_proxy= \
     ALL_PROXY= \
     all_proxy=
+
+# 容器自带的健康检查（docker run 场景或 compose 未覆盖时也生效）。
+# /health 是存活探针：进程活着即回 200，DB 读失败会带 dbError 标记但仍 200，
+# 避免瞬时 DB 抖动把容器误判为 unhealthy。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget -q -O /dev/null http://localhost:7000/health || exit 1
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
