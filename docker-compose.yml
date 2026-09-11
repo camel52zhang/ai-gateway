@@ -1,9 +1,12 @@
-# AI Gateway —— Docker Compose 部署（仅 App 容器）
+# AI Gateway —— 本地开发 Compose（从源码构建）
 #
 # 快速开始：
 #   1. cp .env.example .env        # 按需修改宿主机端口 / 跨域来源
 #   2. docker compose up -d --build
 #   3. 浏览器打开 http://localhost:7000
+#
+# 要部署到 VPS / NAS（免构建、直接拉 CI 镜像）请改用：
+#   docker compose -f vps-docker-compose.yml up -d
 #
 # 首次运行：容器内会生成 data/gateway.db，管理员用户名为 admin。
 #          建议在 .env 里设置 ADMIN_PASSWORD，启动时即完成初始化；
@@ -35,12 +38,7 @@ services:
       #   VERSION=$(git rev-parse --short HEAD) docker compose build
       args:
         VERSION: "${VERSION:-dev}"
-    # 镜像名。本地 `docker compose build` 产出 ai-gateway:latest；
-    # 在只拉官方镜像的机器（如 VPS）上，请在 .env 里设
-    #   IMAGE=camel52zhang/ai-gateway:latest
-    # 这样 `docker compose pull` 才能拉到 CI 推送到 Docker Hub 的镜像
-    # （不加 registry 前缀会被解析成 docker.io/library/ai-gateway:latest，并不存在）。
-    image: "${IMAGE:-ai-gateway:latest}"
+    image: ai-gateway:latest
     container_name: ai-gateway
     restart: unless-stopped
 
@@ -66,7 +64,7 @@ services:
       RESET_PASSWORD: "${RESET_PASSWORD:-0}"
       # ⚠️ 危险开关：置 1 时，首次运行（库中尚无密码）接受「任意密码」登录，
       # 恢复到旧的宽松行为。仅用于无法设置 ADMIN_PASSWORD 的受限场景；
-      # 公网可达的环境切勿开启（首次运行的任何人都能占位设密）。
+      # 本地环境风险可控，公网环境切勿开启（见 vps-docker-compose.yml）。
       ALLOW_FIRST_RUN_ANY_PASSWORD: "${ALLOW_FIRST_RUN_ANY_PASSWORD:-0}"
       # 放在 nginx 等反向代理后面时置 1，登录限流才会按真实客户端 IP 计数
       # （否则所有请求都来自代理 IP，等于全局限流，攻击者可把管理员锁在门外）。

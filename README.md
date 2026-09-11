@@ -20,13 +20,26 @@
 
 ## 快速开始（Docker Compose）
 
-仓库根目录已提供 `docker-compose.yml` 与 `.env.example`：
+仓库根目录提供两份 Compose 文件，按场景二选一：
+
+**本地开发（从源码构建）** —— `docker-compose.yml`：
 
 ```bash
 cp .env.example .env        # 可选：改宿主机端口 / 跨域来源
 docker compose up -d --build
 # 浏览器打开 http://localhost:7000
 ```
+
+**VPS / NAS 部署（免构建，直接拉 CI 镜像）** —— `vps-docker-compose.yml`：
+
+```bash
+# 只需拷贝 vps-docker-compose.yml 和 .env.example（改名 .env）到服务器
+docker compose -f vps-docker-compose.yml pull
+docker compose -f vps-docker-compose.yml up -d
+# 之后升级：pull && up -d（数据在命名卷里，升级不丢）
+```
+
+VPS 版与本地版的差异：镜像固定为 `camel52zhang/ai-gateway:latest`（GitHub Actions push 后自动构建，CI 已跑全量测试）、无 `build` 段、并固化了公网安全约束（`ALLOW_FIRST_RUN_ANY_PASSWORD` 强制为 `0`，注释里附公网安全清单）。
 
 首次运行会生成 `data/gateway.db`，数据通过命名卷 `gateway-data` 持久化（容器重建 / 升级不丢）。
 
@@ -49,7 +62,7 @@ docker compose up -d --build
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `PORT` | `7000` | 监听端口（**容器内固定 7000**，宿主机映射用 compose 的 `${PORT:-7000}`） |
-| `IMAGE` | `ai-gateway:latest` | 使用/拉取的镜像名。只拉官方镜像的机器设为 `camel52zhang/ai-gateway:latest`，`docker compose pull` 才拉得到 |
+| `IMAGE` | `ai-gateway:latest` | ⚠️ 已废弃：镜像名现由各自的 compose 文件固定（本地版构建 `ai-gateway:latest`，VPS 版拉取 `camel52zhang/ai-gateway:latest`），无需再通过环境变量切换 |
 | `ALLOWED_ORIGIN` | 空（允许任意来源） | CORS 允许来源；生产建议设为你的前端域名，例如 `https://gw.example.com` |
 | `ADMIN_PASSWORD` | 空 | 首次启动时用它初始化 `admin` 账号（**建议设置**）。未设置且库中无密码时，登录会被拒绝 |
 | `RESET_PASSWORD` | `0` | 置 `1` 时本次启动会重置密码（用 `ADMIN_PASSWORD`；未设置则生成随机密码并打印到日志）。**用完请立即移除** |
@@ -133,7 +146,8 @@ docker pull camel52zhang/ai-gateway:latest
 ```
 .
 ├── Dockerfile              # 多阶段构建（golang:1.26-alpine → alpine:3.20）
-├── docker-compose.yml      # 部署配置（App 容器 + 命名卷 + 健康检查）
+├── docker-compose.yml        # 本地部署配置（源码构建 + 命名卷 + 健康检查）
+├── vps-docker-compose.yml    # VPS/NAS 部署配置（免构建拉镜像 + 公网安全清单）
 ├── docker-entrypoint.sh    # 修正数据目录属主后降权到 app 用户
 ├── .env.example            # 环境变量样例
 ├── main.go                 # 路由与启动入口（端口 7000）

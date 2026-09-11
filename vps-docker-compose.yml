@@ -1,0 +1,85 @@
+# AI Gateway —— VPS / NAS 部署 Compose（免构建，直接拉 CI 镜像）
+#
+# 快速开始：
+#   1. 把仓库里的这个文件和 .env.example 拷到服务器某目录，改名 .env 并按需修改
+#      （至少设置 ADMIN_PASSWORD；放 nginx 后面则把 TRUST_PROXY 改 1）
+#   2. docker compose -f vps-docker-compose.yml pull
+#      docker compose -f vps-docker-compose.yml up -d
+#   3. 浏览器打开 http://<服务器IP>:7000
+#
+# 与 docker-compose.yml（本地源码构建版）的区别：
+#   - 无 build 段：服务器上不需要源码，只从 Docker Hub 拉取 CI 构建好的镜像
+#     （镜像由 GitHub Actions 在 push 后自动构建并推送，已跑全量 go test）。
+#   - 镜像固定为 camel52zhang/ai-gateway:latest（公共仓库，无需登录即可拉取）。
+#   - 升级方式：docker compose -f vps-docker-compose.yml pull && \
+#               docker compose -f vps-docker-compose.yml up -d
+#     （数据在命名卷里，升级不丢。）
+#
+# ⚠️ 公网安全清单（与本地版不同，务必逐条核对）：
+#   1) .env 里必须设置 ADMIN_PASSWORD（公网上首次运行「任意密码」= 任何人可接管）。
+#   2) 不要开启 ALLOW_FIRST_RUN_ANY_PASSWORD（本地版允许的宽松行为这里严禁）。
+#   3) 建议放在 nginx / Caddy 反代后面并启用 HTTPS；此时必须把 TRUST_PROXY=1，
+#      否则登录限流会按代理 IP 全局计数（见下方环境变量说明）。
+#   4) 反代与本服务在同一台机器时，可把 ports 改成只绑回环地址（见 ports 注释）。
+
+services:
+  ai-gateway:
+    image: camel52zhang/ai-gateway:latest
+    container_name: ai-gateway
+    restart: unless-stopped
+
+    # init: 由 Docker 注入一个轻量 init(PID 1)，负责回收僵尸进程并把
+    # SIGTERM 正确转发给入口脚本 / 网关，配合程序的优雅关闭。
+    init: true
+
+    # 安全硬化：禁止容器内的进程通过 setuid/setgid 二进制或文件能力「获得」新权限。
+    # 入口脚本以 root 启动、chown 后 su-exec 到 app 用户——那是「放弃」权限而非获取，
+    # 不受此选项影响（已实测启动、健康检查、登录均正常）。
+    security_opt:
+      - no-new-privileges:true
+
+    ports:
+      # 默认对公网开放（VPS 防火墙/安全组记得放行该端口）。
+      # 若 nginx/Caddy 与本容器在同一台机器上，建议改为只绑回环地址，
+      # 让网关完全不可被公网直连、仅反代可达：
+      #   - "127.0.0.1:${PORT:-7000}:7000"
+      - "${PORT:-7000}:7000"
+    environment:
+      PORT: "7000"
+      # 生产建议设为你的前端/访问域名，例如 https://gw.example.com
+      ALLOWED_ORIGIN: "${ALLOWED_ORIGIN:-}"
+      # 公网部署必须设置：首次启动时用该密码初始化 admin 账号
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      # 置 1 时，本次启动会把密码重置为 ADMIN_PASSWORD；未设置 ADMIN_PASSWORD
+      # 则生成随机密码并打印到容器日志。用完请立即移除该变量。
+      RESET_PASSWORD: "${RESET_PASSWORD:-0}"
+      # ⚠️ 公网环境严禁置 1：首次运行的任何人都能「占位」设密接管网关。
+      ALLOW_FIRST_RUN_ANY_PASSWORD: "0"
+      # 放在 nginx 等反向代理后面时置 1，登录限流才会按真实客户端 IP 计数
+      # （否则所有请求都来自代理 IP，等于全局限流，攻击者可把管理员锁在门外）。
+      # 仅在确认前置代理会重写 X-Real-IP / X-Forwarded-For 时才开启。
+      TRUST_PROXY: "${TRUST_PROXY:-0}"
+    volumes:
+      - gateway-data:/app/data
+
+    # 优雅关闭窗口：给在途请求（含长流式生成）留出收尾时间
+    stop_grace_period: 15s
+
+    healthcheck:
+      # 容器内 busybox wget 探测 /health；连接失败即视为不健康
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    # 日志滚动，避免长期运行时 json-file 日志无限增长占满磁盘
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  gateway-data:
+    driver: local
