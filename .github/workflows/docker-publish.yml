@@ -2,7 +2,8 @@ name: Docker Publish
 
 # 触发条件：
 #   - push 到 main 分支        → 跑测试 + 构建并推送 latest 与 commit SHA 短标签
-#   - 打 v*.*.* 语义化 tag     → 额外推送对应版本标签
+#   - 打 vYY.MM.DD tag        → 额外推送日期版本标签（如 26.09.15），
+#                               镜像内部版本号（启动横幅）= YY.MM.DD（去 v）
 #   - 提 PR 到 main            → 仅跑测试，不推送镜像
 on:
   push:
@@ -68,10 +69,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      # 计算内部版本号（启动横幅用）：
+      #   - tag push (vYY.MM.DD) → YY.MM.DD（去掉 v 前缀）
+      #   - 分支 push            → commit 短哈希
+      - name: Compute version
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
       # 根据触发条件生成镜像标签：
       #   - main 分支          → latest
       #   - 任意 push          → sha-<短哈希>
-      #   - v*.*.* tag         → 语义化版本（如 v1.2.3）
+      #   - vYY.MM.DD tag      → 26.09.15 这样的日期版本
+      # 注意：不能用 type=semver —— 它按 SemVer 规范归一化，会把
+      # v26.09.15 变成 26.9.15（抹掉前导零）；type=match 用正则捕获组
+      # 原样保留 YY.MM.DD 格式。
       # images 同时列出两个 registry：同一份 tags 会分别应用到
       # Docker Hub 与 GHCR，一次构建双处推送（免重复构建缓存）。
       - name: Extract metadata (tags, labels)
@@ -84,8 +100,7 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short
-            type=semver,pattern={{version}}
-            type=ref,event=tag
+            type=match,pattern=v(\d{2}\.\d{2}\.\d{2}),group=1
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -95,8 +110,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # 注入版本号，供启动横幅打印（.dockerignore 排除了 .git，构建期
-          # 无法自行读取 VCS revision）。
+          # 无法自行读取 VCS revision）。tag push 时 = YY.MM.DD。
           build-args: |
-            VERSION=${{ github.sha }}
+            VERSION=${{ steps.ver.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
