@@ -130,8 +130,9 @@ docker pull camel52zhang/ai-gateway:latest
 
 仓库已配置 `.github/workflows/docker-publish.yml`：
 
-- **push 到 `main`** → 跑 `go test ./...` + 构建并推送 `latest` 与 commit SHA 短标签
-- **打 `v*.*.*` 标签** → 额外推送语义化版本标签
+- **push 到 `main`** → 跑 `go test ./...` + 构建并推送 `latest` 与 commit SHA 短标签（启动横幅 = 短哈希）
+- **打 `vYY.MM.DD` 标签**（如 `v26.09.15`）→ 额外推送日期版本标签 `26.09.15`，启动横幅 = `26.09.15`（去 `v`；用 `type=match` 保留前导零，SemVer 归一化会抹成 `26.9.15`）
+- **双 registry 发布**：Docker Hub + GHCR（`ghcr.io/camel52zhang/ai-gateway`，内置 `GITHUB_TOKEN` 认证，零 secret）
 - 使用 Docker Hub 官方 action（`setup-buildx` / `login` / `metadata` / `build-push`），并启用 GitHub Actions 缓存加速
 
 **使用前需在仓库 `Settings → Secrets and variables → Actions` 配置两个 Secret：**
