@@ -8,9 +8,12 @@
 #   3. 浏览器打开 http://<服务器IP>:7000
 #
 # 与 docker-compose.yml（本地源码构建版）的区别：
-#   - 无 build 段：服务器上不需要源码，只从 Docker Hub 拉取 CI 构建好的镜像
+#   - 无 build 段：服务器上不需要源码，只拉取 CI 构建好的镜像
 #     （镜像由 GitHub Actions 在 push 后自动构建并推送，已跑全量 go test）。
 #   - 镜像固定为 camel52zhang/ai-gateway:latest（公共仓库，无需登录即可拉取）。
+#     备用源：ghcr.io/camel52zhang/ai-gateway:latest（CI 同步推送到
+#     GitHub Container Registry，见仓库 Packages 页）。若 Docker Hub 拉
+#     不到，把下面 image 改成 ghcr.io 前缀即可。
 #   - 升级方式：docker compose -f vps-docker-compose.yml pull && \
 #               docker compose -f vps-docker-compose.yml up -d
 #     （数据在命名卷里，升级不丢。）

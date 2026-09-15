@@ -83,7 +83,7 @@ docker compose -f vps-docker-compose.yml pull && \
 docker compose -f vps-docker-compose.yml up -d
 ```
 
-VPS 版与本地版的差异：镜像固定为 `camel52zhang/ai-gateway:latest`（GitHub Actions 在每次 push 后自动构建并跑全量 `go test`）、无 `build` 段、`ALLOW_FIRST_RUN_ANY_PASSWORD` 强制为 `0`（公网禁止宽松首登）。
+VPS 版与本地版的差异：镜像固定为 `camel52zhang/ai-gateway:latest`（GitHub Actions 在每次 push 后自动构建并跑全量 `go test`）、无 `build` 段、`ALLOW_FIRST_RUN_ANY_PASSWORD` 强制为 `0`（公网禁止宽松首登）。镜像同时发布到 **GHCR**（`ghcr.io/camel52zhang/ai-gateway:latest`，见仓库 Packages 页）作为备用源——Docker Hub 拉取不畅时把 `image` 换成 `ghcr.io` 前缀即可。
 
 **公网部署安全清单（逐条核对）：**
 
