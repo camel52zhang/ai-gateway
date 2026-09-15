@@ -25,3 +25,6 @@ ai-gateway-linux-amd64
 .DS_Store
 Thumbs.db
 *.swp
+
+# --- 网关数据（bind mount 的 SQLite 库，绝不能入库）---
+gateway-data/

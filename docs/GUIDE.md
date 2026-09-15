@@ -78,7 +78,7 @@ docker compose up -d
 docker compose -f vps-docker-compose.yml pull
 docker compose -f vps-docker-compose.yml up -d
 
-# 之后升级（数据在命名卷里，不丢）：
+# 之后升级（数据在 ./gateway-data 目录里，不丢）：
 docker compose -f vps-docker-compose.yml pull && \
 docker compose -f vps-docker-compose.yml up -d
 ```
@@ -324,7 +324,8 @@ API Key:      <概览页的统一Key>
 所有持久化数据在一个 SQLite 文件里：
 
 ```bash
-# Docker 部署：数据在命名卷 gateway-data（容器内 /app/data/gateway.db）
+# Docker 部署：数据在 ./gateway-data/gateway.db（bind mount，容器内 /app/data/gateway.db）；
+# 直接拷贝该文件夹即可备份/迁移
 # 快速备份（在线安全，SQLite 一致性由引擎保证）：
 docker compose exec -T ai-gateway sh -c 'cat /app/data/gateway.db' > backup-$(date +%F).db
 
@@ -343,7 +344,7 @@ docker compose -f vps-docker-compose.yml up -d
 git pull && docker compose up -d --build
 ```
 
-升级不丢数据（命名卷）；优雅关闭：`docker stop` 发 SIGTERM 后网关排空在途请求（含长流式）再退出，`stop_grace_period: 15s`。
+升级不丢数据（bind mount ./gateway-data）；优雅关闭：`docker stop` 发 SIGTERM 后网关排空在途请求（含长流式）再退出，`stop_grace_period: 15s`。
 
 ### 8.3 健康检查与监控
 
@@ -390,7 +391,7 @@ git pull && docker compose up -d --build
 `docker compose run --rm ai-gateway --reset-password`（§4.2 路径③），不需要进容器。建议登录后立即在设置页生成**主恢复密钥**——它不会失效，是唯一不需要服务器权限的自助路径。
 
 **Q9：想彻底重置（含配置）？**
-⚠️ 会丢掉所有 Provider/Key/统计：`docker compose down -v`（删除命名卷）后重新初始化。一般密码问题用 §4.2 即可，**不要**动 `-v`。
+⚠️ 会丢掉所有 Provider/Key/统计：删掉 `gateway-data/` 目录（或旧部署的命名卷 `docker compose down -v`）后重新初始化。一般密码问题用 §4.2 即可，**不要**动 `-v`。
 
 ---
 

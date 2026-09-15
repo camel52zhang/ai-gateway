@@ -19,14 +19,13 @@
 #   2) .env 设 ADMIN_PASSWORD=... 与 RESET_PASSWORD=1，重启一次，用完移除。
 #   3) 登录页「忘记密码？用恢复码」——用设置页生成的离线恢复码自助重置。
 #
-# 数据持久化：命名卷 gateway-data 挂载到 /app/data，容器重建/升级不丢数据。
+# 数据持久化：宿主机目录 ./gateway-data 挂载到 /app/data，容器重建/升级不丢数据，
+# 且 gateway.db 直接落在项目目录里，备份/迁移就是拷文件夹。
 # 端口映射：宿主机 ${PORT:-7000} -> 容器 7000（容器内固定 7000）。
 #
-# 若想改用宿主机目录（便于直接备份/查看 gateway.db），把 volumes 换成：
-#   - ./gateway-data:/app/data
-# 并在首次启动前确保目录可写：mkdir -p gateway-data && chown -R 100:101 gateway-data
-# （镜像内 app 用户的 uid:gid = 100:101）。入口脚本在容器以 root 启动时
-#  会自动 chown /app/data，因此多数情况下无需手动处理。
+# 属主说明：镜像内 app 用户 uid:gid = 100:101。入口脚本在容器以 root 启动时
+# 会自动 chown /app/data（含 bind mount），无需手动处理；Linux 上若以非 root
+# 用户运行 compose（rootless），请先 chown -R 100:101 gateway-data。
 
 services:
   ai-gateway:
@@ -71,7 +70,7 @@ services:
       # 仅在确认前置代理会重写 X-Real-IP / X-Forwarded-For 时才开启。
       TRUST_PROXY: "${TRUST_PROXY:-0}"
     volumes:
-      - gateway-data:/app/data
+      - ./gateway-data:/app/data
 
     # 优雅关闭窗口：给在途请求（含长流式生成）留出收尾时间
     stop_grace_period: 15s
@@ -90,7 +89,3 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  gateway-data:
-    driver: local

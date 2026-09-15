@@ -16,7 +16,7 @@
 #     不到，把下面 image 改成 ghcr.io 前缀即可。
 #   - 升级方式：docker compose -f vps-docker-compose.yml pull && \
 #               docker compose -f vps-docker-compose.yml up -d
-#     （数据在命名卷里，升级不丢。）
+#     （数据落在 ./gateway-data 目录里，升级不丢。）
 #
 # ⚠️ 公网安全清单（与本地版不同，务必逐条核对）：
 #   1) .env 里必须设置 ADMIN_PASSWORD（公网上首次运行「任意密码」= 任何人可接管）。
@@ -63,7 +63,7 @@ services:
       # 仅在确认前置代理会重写 X-Real-IP / X-Forwarded-For 时才开启。
       TRUST_PROXY: "${TRUST_PROXY:-0}"
     volumes:
-      - gateway-data:/app/data
+      - ./gateway-data:/app/data
 
     # 优雅关闭窗口：给在途请求（含长流式生成）留出收尾时间
     stop_grace_period: 15s
@@ -83,6 +83,6 @@ services:
         max-size: "10m"
         max-file: "3"
 
-volumes:
-  gateway-data:
-    driver: local
+# 数据落在 ./gateway-data（与 compose 文件同目录），备份 = 拷走该文件夹。
+# 入口脚本以 root 启动时会自动 chown 该目录（容器内 app 用户 uid:gid = 100:101）；
+# 若以 rootless compose 运行，请先 chown -R 100:101 gateway-data。
