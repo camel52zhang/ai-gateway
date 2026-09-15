@@ -143,6 +143,23 @@ func GenerateRecoveryCode() string {
 	return strings.Join(parts, "-")
 }
 
+// GenerateRecoveryKey returns the permanent master recovery key, formatted as
+// XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX (32 symbols, ~160 bits). Longer than
+// a one-time code because this key never rotates automatically: it must stay
+// off brute-force radars for the lifetime of the installation. It is hashed
+// with the same normalisation as recovery codes (dashes / case optional).
+func GenerateRecoveryKey() string {
+	raw := randomString(recoveryAlphabet, 32)
+	if raw == "" {
+		return ""
+	}
+	parts := make([]string, 0, 8)
+	for i := 0; i < len(raw); i += 4 {
+		parts = append(parts, raw[i:i+4])
+	}
+	return strings.Join(parts, "-")
+}
+
 // NormalizeRecoveryCode drops separators and case so a code typed without its
 // dashes, or in lower case, still verifies.
 func NormalizeRecoveryCode(code string) string {

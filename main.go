@@ -196,6 +196,15 @@ func main() {
 		http.NotFound(w, r)
 	})
 
+	// Issue or replace the permanent master recovery key (authenticated).
+	mux.HandleFunc("/api/recovery/key/generate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			api.HandleRecoveryKeyGenerate(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+
 	mux.HandleFunc("/api/providers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			api.HandleProviders(w, r)

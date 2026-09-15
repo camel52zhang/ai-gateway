@@ -53,15 +53,15 @@ func RenderLogin() string {
       <button type="submit" id="submit-btn">登录</button>
     </form>
     <form id="recovery-form" style="display:none">
-      <label for="recovery-code">恢复码</label>
-      <input id="recovery-code" type="text" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+      <label for="recovery-code">恢复码 / 主恢复密钥</label>
+      <input id="recovery-code" type="text" placeholder="XXXX-XXXX-XXXX-..." autocomplete="off" spellcheck="false">
       <label for="new-password">新密码</label>
       <input id="new-password" type="password" autocomplete="new-password">
       <label for="new-password2">确认新密码</label>
       <input id="new-password2" type="password" autocomplete="new-password">
-      <button type="submit" id="recovery-btn">用恢复码重置密码</button>
+      <button type="submit" id="recovery-btn">用恢复凭据重置密码</button>
     </form>
-    <p class="footer" id="footer">登录后可在「设置」页面修改密码 · <a id="recovery-link">忘记密码？用恢复码</a></p>
+    <p class="footer" id="footer">登录后可在「设置」页面修改密码 · <a id="recovery-link">忘记密码？用恢复码 / 主恢复密钥</a></p>
     <p class="footer" id="back-footer" style="display:none"><a id="back-link">返回登录</a></p>
   </div>
   <script>
@@ -103,7 +103,7 @@ func RenderLogin() string {
         footer.style.display = 'none';
         backFooter.style.display = 'block';
         recForm.style.display = 'block';
-        subtitle.textContent = '输入一次性恢复码以设置新密码';
+        subtitle.textContent = '输入一次性恢复码或主恢复密钥以设置新密码';
         document.getElementById('recovery-code').focus();
       });
 
@@ -122,7 +122,7 @@ func RenderLogin() string {
         var code = document.getElementById('recovery-code').value.trim();
         var p1 = document.getElementById('new-password').value;
         var p2 = document.getElementById('new-password2').value;
-        if (!code) { showError('请输入恢复码'); return; }
+        if (!code) { showError('请输入恢复码或主恢复密钥'); return; }
         if (p1.length < 6) { showError('新密码至少 6 位'); return; }
         if (p1 !== p2) { showError('两次输入的密码不一致'); return; }
 
@@ -147,12 +147,14 @@ func RenderLogin() string {
             if (!userInput.value) userInput.value = 'admin';
             document.getElementById('password').value = '';
             document.getElementById('password').focus();
-            showInfo('密码已重置。剩余可用恢复码：' + (d.codesRemaining != null ? d.codesRemaining : 0) + ' 个');
+            showInfo(d.usedRecoveryKey
+              ? '密码已重置（使用主恢复密钥，密钥未失效）。'
+              : '密码已重置。剩余可用恢复码：' + (d.codesRemaining != null ? d.codesRemaining : 0) + ' 个');
             return;
           }
           showError(d.error || '重置失败');
         } catch(e) { showError('网络错误'); }
-        finally { btn.disabled = false; btn.textContent = '用恢复码重置密码'; }
+        finally { btn.disabled = false; btn.textContent = '用恢复凭据重置密码'; }
       });
     })();
   </script>
@@ -537,7 +539,7 @@ func renderDashboardTemplate(providerDataJSON string) string {
             <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
               <div>
                 <h3 class="font-semibold mb-1">离线恢复码</h3>
-                <p class="text-xs text-gray-500">忘记密码时，可在登录页用一次性恢复码设置新密码。每个码只能使用一次，不依赖短信或邮箱。</p>
+                <p class="text-xs text-gray-500">忘记密码时，可在登录页用一次性恢复码或主恢复密钥设置新密码。不依赖短信或邮箱。</p>
               </div>
               <div class="flex items-center gap-3">
                 <span class="text-sm text-gray-600">剩余 <span class="font-medium" :class="recoveryCount > 0 ? 'text-green-600' : 'text-red-600'">{{ recoveryCount }}</span> 个</span>
@@ -547,12 +549,42 @@ func renderDashboardTemplate(providerDataJSON string) string {
                 </button>
               </div>
             </div>
+            <div v-if="recoveryCount < 3" class="bg-red-50 border border-red-200 rounded-lg p-3 mb-3">
+              <p class="text-xs text-red-800"><i class="fas fa-exclamation-triangle mr-1"></i>恢复码余量不足（剩 {{ recoveryCount }} 个）——全部用尽且没有主恢复密钥时，只能通过服务器上的 <code>--reset-password</code> 找回。建议尽快重新生成。</p>
+            </div>
             <div v-if="recoveryCodes.length" class="bg-amber-50 border border-amber-200 rounded-lg p-3">
               <p class="text-xs text-amber-800 mb-2"><i class="fas fa-exclamation-triangle mr-1"></i>这些恢复码只显示这一次，离开页面后无法再次查看，请立即保存到密码管理器或离线记录。</p>
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-1 font-mono text-sm">
                 <div v-for="(c, i) in recoveryCodes" :key="'rc'+i" class="bg-white rounded px-2 py-1 border border-amber-200">{{ c }}</div>
               </div>
               <button @click="copyRecoveryCodes" class="btn btn-secondary text-xs mt-3"><i class="fas fa-copy mr-1"></i>复制全部</button>
+            </div>
+          </div>
+
+          <!-- Master recovery key: permanent, not consumed on use -->
+          <div class="card lg:col-span-2">
+            <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+              <div>
+                <h3 class="font-semibold mb-1">主恢复密钥</h3>
+                <p class="text-xs text-gray-500">一把恒久的恢复凭据：不会因使用而失效，只要持有它就永远能在登录页重置密码。重新生成会使旧密钥作废。</p>
+              </div>
+              <div class="flex items-center gap-3">
+                <span class="text-sm" :class="config.recoveryKeySet ? 'text-green-600' : 'text-gray-400'">
+                  <i class="fas mr-1" :class="config.recoveryKeySet ? 'fa-check-circle' : 'fa-times-circle'"></i>{{ config.recoveryKeySet ? '已设置' : '未设置' }}
+                </span>
+                <button @click="generateRecoveryKey" :disabled="recoveryKeyLoading" class="btn btn-secondary text-sm">
+                  <span v-if="!recoveryKeyLoading"><i class="fas fa-user-shield mr-1"></i>{{ config.recoveryKeySet ? '重新生成密钥' : '生成主恢复密钥' }}</span>
+                  <span v-else><i class="fas fa-circle-notch fa-spin mr-1"></i>生成中...</span>
+                </button>
+              </div>
+            </div>
+            <div v-if="recoveryKey" class="bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <p class="text-xs text-amber-800 mb-2"><i class="fas fa-exclamation-triangle mr-1"></i>主恢复密钥只显示这一次，离开页面后无法再次查看，请立即保存到密码管理器或离线记录。</p>
+              <div class="bg-white rounded px-2 py-1 border border-amber-200 font-mono text-sm break-all">{{ recoveryKey }}</div>
+              <button @click="copyRecoveryKey" class="btn btn-secondary text-xs mt-3"><i class="fas fa-copy mr-1"></i>复制密钥</button>
+            </div>
+            <div v-else-if="!config.recoveryKeySet" class="bg-red-50 border border-red-200 rounded-lg p-3">
+              <p class="text-xs text-red-800"><i class="fas fa-exclamation-triangle mr-1"></i>尚未设置主恢复密钥。若一次性恢复码用尽或丢失，将只剩服务器命令行（<code>--reset-password</code>）这一条找回路径。</p>
             </div>
           </div>
         </div>
@@ -745,6 +777,9 @@ func renderDashboardTemplate(providerDataJSON string) string {
           // Offline recovery codes (plaintext is shown once, never stored)
           recoveryCodes: [],
           recoveryLoading: false,
+          // Master recovery key (permanent, plaintext shown once on generate)
+          recoveryKey: '',
+          recoveryKeyLoading: false,
           // Custom provider
           showCustomForm: false,
           editingCustomId: '',
@@ -1368,6 +1403,37 @@ func renderDashboardTemplate(providerDataJSON string) string {
           }
           const ta = document.createElement('textarea');
           ta.value = text;
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); done(); } catch (e) { this.showToast('复制失败，请手动选择复制', 'error'); }
+          document.body.removeChild(ta);
+        },
+        // Master recovery key: issued or replaced here; plaintext returned
+        // exactly once and only the digest persisted server-side.
+        async generateRecoveryKey() {
+          if (this.config.recoveryKeySet && !confirm('重新生成会使旧的主恢复密钥永久作废，确定继续吗？')) return;
+          this.recoveryKeyLoading = true;
+          try {
+            const res = await fetch('/api/recovery/key/generate', { method:'POST', headers:{'Content-Type':'application/json'} });
+            const d = await res.json().catch(() => ({}));
+            if (res.ok) {
+              this.recoveryKey = d.key || '';
+              await this.fetchConfig();
+              this.showToast('主恢复密钥已生成，请立即保存', 'success');
+            } else {
+              this.showToast(d.error || '生成失败', 'error');
+            }
+          } catch { this.showToast('网络错误', 'error'); }
+          finally { this.recoveryKeyLoading = false; }
+        },
+        copyRecoveryKey() {
+          const done = () => this.showToast('主恢复密钥已复制到剪贴板', 'success');
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(this.recoveryKey).then(done).catch(() => this.showToast('复制失败，请手动选择复制', 'error'));
+            return;
+          }
+          const ta = document.createElement('textarea');
+          ta.value = this.recoveryKey;
           document.body.appendChild(ta);
           ta.select();
           try { document.execCommand('copy'); done(); } catch (e) { this.showToast('复制失败，请手动选择复制', 'error'); }

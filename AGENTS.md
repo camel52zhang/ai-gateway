@@ -31,6 +31,7 @@ mode that actually happens is "locked out of my own service", not impersonation.
 | Reset, one-shot | `--reset-password` | Resets then **exits**; prints a generated password unless `ADMIN_PASSWORD` is set |
 | Reset, in-place | `RESET_PASSWORD=1` | Resets during startup and keeps serving; logs a warning until the var is removed |
 | Offline recovery codes | Settings page | 10 one-time codes, consumed from the login page |
+| Master recovery key | Settings page | One permanent high-entropy key (digest-only storage, NOT consumed on use); accepted by the same login-page form as the codes |
 
 - A local reset is **not** a privilege escalation: anyone who can run the binary
   or edit the compose file can already rewrite the SQLite database by hand.

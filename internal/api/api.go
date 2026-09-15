@@ -43,8 +43,10 @@ func HandleConfigGet(w http.ResponseWriter, r *http.Request) {
 		"models":          cfg.Models,
 		"modelEnabled":    cfg.ModelEnabled,
 		// Expose only how many one-time codes remain; the digests themselves
-		// never leave the server.
+		// never leave the server. recoveryKeySet is a boolean only — the key
+		// digest never leaves the server either.
 		"recoveryCodesRemaining": len(cfg.RecoveryCodes),
+		"recoveryKeySet":         cfg.RecoveryKeyHash != "",
 		"requestLog":      truncateLog(storage.GetRequestLog(), 50),
 		"errorLog":        truncateLogErrors(storage.GetErrorLog(), 50),
 		"providerLatency": storage.GetProviderLatency(),
@@ -254,6 +256,46 @@ func HandleRecoveryGenerate(w http.ResponseWriter, r *http.Request) {
 		"codes":   codes,
 		"count":   len(codes),
 		"message": "恢复码只显示这一次，请立即保存到密码管理器或离线保存。每个码只能使用一次。",
+	})
+}
+
+// HandleRecoveryKeyGenerate issues the permanent master recovery key (or
+// replaces the existing one). Like the one-time codes, the plaintext is
+// returned exactly once and only the digest is stored. Unlike the codes, the
+// key is not consumed on use — it stays valid until regenerated here, so a
+// locked-out operator who still holds it is never fully locked out.
+func HandleRecoveryKeyGenerate(w http.ResponseWriter, r *http.Request) {
+	if !storage.IsAuthenticated(r) {
+		utils.JSON(w, 401, map[string]string{"error": "Authentication required"})
+		return
+	}
+
+	cfg, err := storage.GetConfig()
+	if err != nil {
+		utils.JSON(w, 500, map[string]string{"error": "Config error"})
+		return
+	}
+
+	key := utils.GenerateRecoveryKey()
+	if key == "" {
+		utils.JSON(w, 500, map[string]string{"error": "Failed to generate key"})
+		return
+	}
+	replaced := cfg.RecoveryKeyHash != ""
+	cfg.RecoveryKeyHash = utils.HashRecoveryCode(key)
+	if err := storage.SaveConfig(cfg); err != nil {
+		utils.JSON(w, 500, map[string]string{"error": "Failed to save recovery key"})
+		return
+	}
+	if replaced {
+		log.Printf("[auth] master recovery key replaced (old key invalidated)")
+	} else {
+		log.Printf("[auth] master recovery key issued")
+	}
+
+	utils.JSON(w, 200, map[string]interface{}{
+		"key":     key,
+		"message": "主恢复密钥只显示这一次，请立即保存到密码管理器。它不会因使用而失效，重新生成会使旧密钥作废。",
 	})
 }
 

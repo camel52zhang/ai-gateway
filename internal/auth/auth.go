@@ -211,11 +211,14 @@ func HandleResetPassword(w http.ResponseWriter, r *http.Request) {
 	utils.JSON(w, 200, map[string]bool{"success": true})
 }
 
-// HandleRecoveryReset consumes a one-time recovery code and installs a new
-// password. Recovery codes are the offline fallback for a forgotten password:
-// they are stored only as digests, each code works exactly once, and no
-// network dependency (SMS, mail, OAuth) is involved — so this path still works
-// when the host is offline or the mail provider is having a bad day.
+// HandleRecoveryReset consumes a one-time recovery code — or the permanent
+// master recovery key — and installs a new password. Recovery credentials are
+// the offline fallback for a forgotten password: they are stored only as
+// digests, and no network dependency (SMS, mail, OAuth) is involved — so this
+// path still works when the host is offline or the mail provider is having a
+// bad day. The one-time codes burn on use; the master key does not, so a
+// locked-out operator is never down to "codes exhausted + key lost" with
+// nothing left but server-side CLI access.
 func HandleRecoveryReset(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Code        string `json:"code"`
@@ -243,17 +246,39 @@ func HandleRecoveryReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Match against the master key first, then the one-time codes. Both are
+	// high-entropy random values, so the same fast-digest + constant-time
+	// comparison applies.
 	want := utils.HashRecoveryCode(body.Code)
+	usedKey := cfg.RecoveryKeyHash != "" && utils.TimingSafeCompare(cfg.RecoveryKeyHash, want)
+
 	idx := -1
-	for i, h := range cfg.RecoveryCodes {
-		if utils.TimingSafeCompare(h, want) {
-			idx = i
-			break
+	if !usedKey {
+		for i, h := range cfg.RecoveryCodes {
+			if utils.TimingSafeCompare(h, want) {
+				idx = i
+				break
+			}
 		}
 	}
-	if idx < 0 {
+	if !usedKey && idx < 0 {
 		recordLoginFailure(ip)
-		utils.JSON(w, 401, map[string]string{"error": "Invalid recovery code"})
+		// Distinguish "nothing left to try" from "this one was wrong" so the
+		// operator can tell whether the fault is in the code they typed or in
+		// the situation itself.
+		if len(cfg.RecoveryCodes) == 0 && cfg.RecoveryKeyHash == "" {
+			utils.JSON(w, 401, map[string]interface{}{
+				"error":          "没有可用的恢复凭据：恢复码已用尽且未设置主恢复密钥。请在服务器上运行 --reset-password 重置，或用 ADMIN_PASSWORD + RESET_PASSWORD=1 重启。",
+				"codesRemaining": 0,
+				"recoveryKeySet": false,
+			})
+			return
+		}
+		utils.JSON(w, 401, map[string]interface{}{
+			"error":          "恢复凭据无效或已被使用",
+			"codesRemaining": len(cfg.RecoveryCodes),
+			"recoveryKeySet": cfg.RecoveryKeyHash != "",
+		})
 		return
 	}
 
@@ -263,8 +288,12 @@ func HandleRecoveryReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Burn the code and apply the new password in a single save.
-	cfg.RecoveryCodes = append(cfg.RecoveryCodes[:idx], cfg.RecoveryCodes[idx+1:]...)
+	// Burn the code (one-time path only) and apply the new password in a
+	// single save. The master key is NOT consumed: it stays valid until the
+	// operator explicitly regenerates it.
+	if idx >= 0 {
+		cfg.RecoveryCodes = append(cfg.RecoveryCodes[:idx], cfg.RecoveryCodes[idx+1:]...)
+	}
 	cfg.PasswordHash = hash
 	if err := storage.SaveConfig(cfg); err != nil {
 		utils.JSON(w, 500, map[string]string{"error": "Failed to save config"})
@@ -276,9 +305,14 @@ func HandleRecoveryReset(w http.ResponseWriter, r *http.Request) {
 	storage.DeleteAllSessions()
 
 	resetLoginAttempts(ip)
-	log.Printf("[auth] password reset via recovery code (%d code(s) left)", len(cfg.RecoveryCodes))
+	if usedKey {
+		log.Printf("[auth] password reset via master recovery key")
+	} else {
+		log.Printf("[auth] password reset via recovery code (%d code(s) left)", len(cfg.RecoveryCodes))
+	}
 	utils.JSON(w, 200, map[string]interface{}{
 		"success":        true,
 		"codesRemaining": len(cfg.RecoveryCodes),
+		"usedRecoveryKey": usedKey,
 	})
 }

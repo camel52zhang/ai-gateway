@@ -51,6 +51,12 @@ type Config struct {
 	Username        string                    `json:"username"`
 	PasswordHash    string                    `json:"passwordHash"`
 	RecoveryCodes   []string                  `json:"recoveryCodes,omitempty"`
+	// RecoveryKeyHash is the digest of the permanent master recovery key (if
+	// one has been issued). Unlike the one-time codes it is not consumed on
+	// use — it stays valid until explicitly regenerated — so a locked-out
+	// operator never ends up with "codes exhausted + key lost" as the only
+	// remaining path being server-side CLI access.
+	RecoveryKeyHash string                    `json:"recoveryKeyHash,omitempty"`
 	Providers       []UserProvider            `json:"providers"`
 	UnifiedKey      string                    `json:"unifiedKey"`
 	CustomProviders []CustomProvider          `json:"customProviders"`

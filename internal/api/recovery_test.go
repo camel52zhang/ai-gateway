@@ -229,3 +229,185 @@ func TestFirstRunOptInAllowsClaim(t *testing.T) {
 		t.Fatalf("claiming the instance did not store a password hash")
 	}
 }
+
+// --- Master recovery key (permanent, not consumed on use) ---
+
+func issueRecoveryKey(t *testing.T, sid string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/recovery/key/generate", nil)
+	req.AddCookie(&http.Cookie{Name: "session_id", Value: sid})
+	rec := httptest.NewRecorder()
+	HandleRecoveryKeyGenerate(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("HandleRecoveryKeyGenerate status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode recovery key: %v", err)
+	}
+	if resp.Key == "" {
+		t.Fatalf("issued recovery key is empty")
+	}
+	return resp.Key
+}
+
+// TestRecoveryKeyGenerateRequiresAuth makes sure an anonymous caller cannot
+// mint or replace the master recovery key.
+func TestRecoveryKeyGenerateRequiresAuth(t *testing.T) {
+	setupModelEnabledTest(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/recovery/key/generate", nil)
+	rec := httptest.NewRecorder()
+	HandleRecoveryKeyGenerate(rec, req)
+
+	if rec.Code != 401 {
+		t.Fatalf("expected 401 without a session, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRecoveryKeyIsStoredHashed verifies only the digest of the master key
+// reaches the database, never the plaintext.
+func TestRecoveryKeyIsStoredHashed(t *testing.T) {
+	_, sid := setupModelEnabledTest(t)
+	key := issueRecoveryKey(t, sid)
+
+	cfg, err := storage.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RecoveryKeyHash == "" {
+		t.Fatalf("no digest stored for the master recovery key")
+	}
+	if utils.TimingSafeCompare(cfg.RecoveryKeyHash, key) {
+		t.Fatalf("master recovery key was stored in plaintext")
+	}
+	if cfg.RecoveryKeyHash != utils.HashRecoveryCode(key) {
+		t.Fatalf("stored digest does not match the issued key")
+	}
+}
+
+// TestRecoveryKeyResetFlow walks the master-key path: the key resets the
+// password, keeps working on the next reset (it is permanent, unlike the
+// one-time codes), and leaves the code inventory untouched.
+func TestRecoveryKeyResetFlow(t *testing.T) {
+	_, sid := setupModelEnabledTest(t)
+	codes := issueRecoveryCodes(t, sid)
+	key := issueRecoveryKey(t, sid)
+
+	cfg, err := storage.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := utils.HashPassword("original-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.PasswordHash = hash
+	if err := storage.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := recoveryPostReset(t, key, "key-pass-123")
+	if rec.Code != 200 {
+		t.Fatalf("expected 200 for a valid master key, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Success        bool `json:"success"`
+		UsedRecoveryKey bool `json:"usedRecoveryKey"`
+		CodesRemaining int  `json:"codesRemaining"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode reset response: %v", err)
+	}
+	if !resp.Success || !resp.UsedRecoveryKey {
+		t.Fatalf("expected success via master key, got %+v", resp)
+	}
+	if resp.CodesRemaining != 10 {
+		t.Fatalf("master key reset must not consume codes, got %d left", resp.CodesRemaining)
+	}
+
+	cfg, err = storage.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utils.VerifyPassword("key-pass-123", cfg.PasswordHash) {
+		t.Fatalf("the new password does not verify")
+	}
+	if len(cfg.RecoveryCodes) != 10 {
+		t.Fatalf("expected the 10 codes to survive, got %d", len(cfg.RecoveryCodes))
+	}
+
+	// The same key works again — that is the whole point of it.
+	rec = recoveryPostReset(t, key, "key-pass-456")
+	if rec.Code != 200 {
+		t.Fatalf("expected the master key to keep working, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	cfg, err = storage.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utils.VerifyPassword("key-pass-456", cfg.PasswordHash) {
+		t.Fatalf("second reset did not install the new password")
+	}
+
+	// The key is loose-format tolerant, same as the codes.
+	loose := strings.ToLower(strings.ReplaceAll(key, "-", ""))
+	if rec := recoveryPostReset(t, loose, "key-pass-789"); rec.Code != 200 {
+		t.Fatalf("expected 200 for a normalised master key, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Regenerating invalidates the old key. Every successful reset above
+	// deliberately killed all sessions (that is the product behaviour), so the
+	// authenticated key-generation call needs a fresh session first.
+	freshSid, err := storage.CreateSession("admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = issueRecoveryKey(t, freshSid)
+	if rec := recoveryPostReset(t, key, "key-pass-old"); rec.Code != 401 {
+		t.Fatalf("expected 401 for the replaced key, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Sanity: the codes are still usable after all the key churn.
+	if rec := recoveryPostReset(t, codes[0], "code-pass-123"); rec.Code != 200 {
+		t.Fatalf("expected 200 for a recovery code after key resets, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestRecoveryResetExhaustedMessage pins the diagnostic distinction: with no
+// codes left and no master key, an invalid submission must say so explicitly
+// instead of a bare "invalid code".
+func TestRecoveryResetExhaustedMessage(t *testing.T) {
+	setupModelEnabledTest(t)
+
+	cfg, err := storage.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.RecoveryCodes = nil
+	cfg.RecoveryKeyHash = ""
+	if err := storage.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := recoveryPostReset(t, "AAAA-BBBB-CCCC-DDDD", "whatever-pass")
+	if rec.Code != 401 {
+		t.Fatalf("expected 401, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Error          string `json:"error"`
+		CodesRemaining int    `json:"codesRemaining"`
+		RecoveryKeySet bool   `json:"recoveryKeySet"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if !strings.Contains(resp.Error, "没有可用的恢复凭据") {
+		t.Fatalf("expected the exhausted-credentials message, got %q", resp.Error)
+	}
+	if resp.CodesRemaining != 0 || resp.RecoveryKeySet {
+		t.Fatalf("expected codesRemaining=0 and recoveryKeySet=false, got %+v", resp)
+	}
+}
